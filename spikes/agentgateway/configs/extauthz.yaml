@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# Variant A: route-level extAuthz (Envoy ext_authz v3 gRPC) -> Fortik callout.
+config:
+  adminAddr: 127.0.0.1:15000
+  statsAddr: 127.0.0.1:15020
+  readinessAddr: 127.0.0.1:15021
+frontendPolicies:
+  tracing:
+    host: 127.0.0.1:4318
+    protocol: http
+    randomSampling: "true"
+    attributes:
+      fortik.agent_id: 'request.headers["x-fortik-agent-id"]'
+      fortik.instance_id: 'request.headers["x-fortik-instance-id"]'
+binds:
+- port: 3300
+  listeners:
+  - routes:
+    # A2A route: same extAuthz callout, plus agentgateway's A2A awareness (a2a: {}).
+    - name: a2a
+      matches:
+      - path:
+          pathPrefix: /a2a
+      policies:
+        a2a: {}
+        extAuthz:
+          host: 127.0.0.1:9001
+          protocol:
+            grpc: {}
+          includeRequestBody:
+            maxRequestBytes: 65536
+          failureMode: deny
+      backends:
+      - host: 127.0.0.1:8090
+    - name: mcp
+      policies:
+        extAuthz:
+          host: 127.0.0.1:9001
+          protocol:
+            grpc: {}
+          includeRequestBody:
+            maxRequestBytes: 65536
+            allowPartialMessage: false
+          failureMode: deny
+      backends:
+      - mcp:
+          targets:
+          - name: spike
+            mcp:
+              host: http://127.0.0.1:8090/mcp

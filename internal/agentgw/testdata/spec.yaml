@@ -1,0 +1,20 @@
+port: 3300
+callout: 127.0.0.1:9001
+request_timeout: 250ms
+admin_addr: 127.0.0.1:15000
+stats_addr: 127.0.0.1:15020
+readiness_addr: 127.0.0.1:15021
+mcp:
+  - name: memory
+    path_prefix: /mcp/memory
+    server: memory
+    url: http://127.0.0.1:8090/mcp
+a2a:
+  - name: agent-b
+    path_prefix: /a2a/agent_b
+    agent: agent_b
+    backend: 127.0.0.1:8091
+http:
+  - name: example
+    domain: api.example.com
+    backend: 127.0.0.1:8092

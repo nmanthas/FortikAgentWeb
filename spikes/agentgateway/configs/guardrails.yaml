@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# Variant B: MCP-native mcpGuardrails (agentgateway ext_mcp gRPC) -> Fortik callout, per JSON-RPC method.
+config:
+  adminAddr: 127.0.0.1:15000
+  statsAddr: 127.0.0.1:15020
+  readinessAddr: 127.0.0.1:15021
+frontendPolicies:
+  tracing:
+    host: 127.0.0.1:4318
+    protocol: http
+    randomSampling: "true"
+    attributes:
+      fortik.agent_id: 'request.headers["x-fortik-agent-id"]'
+      fortik.instance_id: 'request.headers["x-fortik-instance-id"]'
+binds:
+- port: 3300
+  listeners:
+  - routes:
+    - name: mcp
+      policies:
+        mcpGuardrails:
+          processors:
+          - kind: remote
+            host: 127.0.0.1:9001
+            methods:
+              "tools/call": request
+              "*": request
+            failureMode: failClosed
+      backends:
+      - mcp:
+          targets:
+          - name: spike
+            mcp:
+              host: http://127.0.0.1:8090/mcp

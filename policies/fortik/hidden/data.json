@@ -1,0 +1,23 @@
+{
+  "encoded_param_min": 256,
+  "encoded_param_floor": 16,
+  "signed_url_params": {
+    "storage.googleapis.com": [
+      "x-goog-signature",
+      "x-goog-credential",
+      "x-goog-security-token",
+      "googleaccessid",
+      "signature"
+    ],
+    "amazonaws.com": [
+      "x-amz-signature",
+      "x-amz-security-token",
+      "x-amz-credential",
+      "signature",
+      "awsaccesskeyid"
+    ],
+    "blob.core.windows.net": [
+      "sig"
+    ]
+  }
+}

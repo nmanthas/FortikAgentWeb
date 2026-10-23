@@ -1,0 +1,45 @@
+{
+  "config": {
+    "default_red_ladder": "ISOLATED",
+    "sensitive_labels": [
+      "customer_pii",
+      "financial",
+      "credentials",
+      "phi",
+      "secret"
+    ],
+    "known_systems": [
+      "gmail",
+      "drive",
+      "github",
+      "aws",
+      "postgres",
+      "memory",
+      "mcp",
+      "a2a",
+      "http",
+      "shell",
+      "files",
+      "agents"
+    ],
+    "pg_destructive_ladder": "READ_ONLY",
+    "pg_snapshot_row_threshold": 100,
+    "pg_bulk_read_rows": 5000,
+    "pg_snapshot_max_rows": 1000000,
+    "gmail_send_delay_seconds": 120,
+    "gmail_bulk_recipients": 25,
+    "github_protected_branches": [
+      "main",
+      "master",
+      "production",
+      "prod"
+    ],
+    "github_protected_adjacent_prefixes": [
+      "release/",
+      "hotfix/",
+      "staging"
+    ],
+    "aws_spend_approval_usd": 500,
+    "spend_approval_usd": 500
+  }
+}

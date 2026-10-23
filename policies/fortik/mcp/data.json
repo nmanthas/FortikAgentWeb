@@ -1,0 +1,62 @@
+{
+  "tool_verbs": {
+    "*": {},
+    "memory": {
+      "read_graph": "READ",
+      "search_nodes": "READ",
+      "open_nodes": "READ",
+      "create_entities": "REMEMBER",
+      "create_relations": "REMEMBER",
+      "add_observations": "REMEMBER",
+      "delete_entities": "DELETE",
+      "delete_observations": "DELETE",
+      "delete_relations": "DELETE"
+    },
+    "github-mcp": {
+      "get_file_contents": "READ",
+      "get_issue": "READ",
+      "get_pull_request": "READ",
+      "list_issues": "READ",
+      "list_pull_requests": "READ",
+      "list_commits": "READ",
+      "search_code": "READ",
+      "search_issues": "READ",
+      "search_repositories": "READ",
+      "create_issue": "WRITE",
+      "add_issue_comment": "WRITE",
+      "update_issue": "WRITE",
+      "create_pull_request": "WRITE",
+      "create_branch": "WRITE",
+      "create_or_update_file": "WRITE",
+      "push_files": "WRITE",
+      "merge_pull_request": "WRITE",
+      "delete_file": "DELETE",
+      "create_repository": "WRITE",
+      "fork_repository": "WRITE"
+    },
+    "filesystem": {
+      "read_file": "READ",
+      "read_text_file": "READ",
+      "read_multiple_files": "READ",
+      "list_directory": "READ",
+      "directory_tree": "READ",
+      "search_files": "READ",
+      "get_file_info": "READ",
+      "list_allowed_directories": "READ",
+      "write_file": "WRITE",
+      "edit_file": "WRITE",
+      "create_directory": "WRITE",
+      "move_file": "WRITE"
+    }
+  },
+  "read_prefixes": ["get_", "list_", "search", "read", "query", "fetch", "find"],
+  "remember_tools": ["create_entities", "add_observations", "create_relations"],
+  "remember_prefixes": ["store", "remember"],
+  "delete_prefixes": ["delete_"],
+  "unsafe_name_tokens": [
+    "delete", "remove", "drop", "destroy", "purge", "truncate", "wipe", "erase", "kill",
+    "write", "update", "create", "insert", "upsert", "edit", "modify", "move", "rename", "patch", "put", "post",
+    "send", "email", "publish", "push", "merge", "commit", "deploy", "upload", "share", "invite",
+    "exec", "run", "eval", "shell", "spawn", "set_", "grant", "revoke", "approve", "transfer", "pay", "charge", "store", "remember", "add_"
+  ]
+}

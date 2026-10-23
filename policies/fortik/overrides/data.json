@@ -1,0 +1,7 @@
+{
+  "config": {
+    "time_layout": "15:04 MST on 2006-01-02",
+    "time_zone": "UTC",
+    "read_only_verbs": ["READ"]
+  }
+}

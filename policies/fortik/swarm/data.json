@@ -1,0 +1,6 @@
+{
+  "settings": {
+    "breaker_approvals": 2,
+    "read_verbs": ["READ"]
+  }
+}

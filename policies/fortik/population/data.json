@@ -1,0 +1,7 @@
+{
+  "settings": {
+    "spawn_system": "agents",
+    "spawn_verb": "DELEGATE",
+    "spawn_operation": "spawn"
+  }
+}

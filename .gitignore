@@ -1,0 +1,8 @@
+# local dev state: Postgres cluster, generated secrets and tokens
+.dev/
+bin/
+*.test
+*.out
+coverage.*
+.env
+# spikes keep their own .gitignore for binaries/outputs
