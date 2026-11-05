@@ -110,6 +110,37 @@ func gateState(t *testing.T, c client.Client, id string) temporalsdk.State {
 	return s
 }
 
+// pausedYet is gateState for polling loops: a query that times out (the
+// workflow's worker is busy, or the workflow has not started yet) means "not
+// yet", not a failure; waitFor bounds the whole wait.
+func pausedYet(c client.Client, id string) bool {
+	v, err := c.QueryWorkflow(context.Background(), id, "", temporalsdk.StateQuery)
+	if err != nil {
+		return false
+	}
+	var s temporalsdk.State
+	return v.Get(&s) == nil && s.Paused
+}
+
+// workingAgain: unpaused and past `before` steps; a timed-out query means
+// "not yet" (see pausedYet).
+func workingAgain(c client.Client, id string, before int) bool {
+	v, err := c.QueryWorkflow(context.Background(), id, "", temporalsdk.StateQuery)
+	if err != nil {
+		return false
+	}
+	var st temporalsdk.State
+	if v.Get(&st) != nil || st.Paused {
+		return false
+	}
+	n, err := c.QueryWorkflow(context.Background(), id, "", stepsQuery)
+	if err != nil {
+		return false
+	}
+	var k int
+	return n.Get(&k) == nil && k > before
+}
+
 func steps(t *testing.T, c client.Client, id string) int {
 	t.Helper()
 	v, err := c.QueryWorkflow(context.Background(), id, "", stepsQuery)
@@ -249,7 +280,7 @@ func TestTemporalAdapterRealServer(t *testing.T) {
 		t.Fatalf("pause result: %+v", res)
 	}
 	for _, id := range []string{"a-1", "a-2"} {
-		waitFor(t, id+" paused", 15*time.Second, func() bool { return gateState(t, c, id).Paused })
+		waitFor(t, id+" paused", 15*time.Second, func() bool { return pausedYet(c, id) })
 		if s := gateState(t, c, id); s.AgentID != "agent-a" || s.Reason != "suspicious requests" {
 			t.Errorf("%s state: %+v", id, s)
 		}
@@ -280,7 +311,7 @@ func TestTemporalAdapterRealServer(t *testing.T) {
 	// Work queued while the agent is paused waits (the helper reads the
 	// pause marker when the workflow starts).
 	start("a-3", "agent-a")
-	waitFor(t, "a-3 paused at start", 15*time.Second, func() bool { return gateState(t, c, "a-3").Paused })
+	waitFor(t, "a-3 paused at start", 15*time.Second, func() bool { return pausedYet(c, "a-3") })
 	if n := steps(t, c, "a-3"); n != 0 {
 		t.Errorf("a-3 ran %d steps while paused", n)
 	}
@@ -302,7 +333,7 @@ func TestTemporalAdapterRealServer(t *testing.T) {
 	for _, id := range []string{"a-1", "a-2", "a-3"} {
 		before := steps(t, c, id)
 		waitFor(t, id+" working again", 15*time.Second, func() bool {
-			return !gateState(t, c, id).Paused && steps(t, c, id) > before
+			return workingAgain(c, id, before)
 		})
 	}
 	if _, paused, _ := schedState(t, c, "sched-a"); paused {

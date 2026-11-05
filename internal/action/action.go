@@ -75,6 +75,11 @@ const (
 	SourceAgentGateway = "agentgateway"
 	SourceHook         = "hook"
 	SourceAPI          = "api"
+	// SourceConnector: a SaaS copilot connector's token request (Phase 6
+	// connector broker); SourceVendorAudit: an action seen in a vendor's
+	// audit log (recorded, never decided).
+	SourceConnector   = "connector"
+	SourceVendorAudit = "vendor_audit"
 )
 
 // PayloadSummary describes the payload without carrying its contents.
@@ -173,7 +178,7 @@ func (a *Action) Validate() error {
 const maxTargetBytes = 64 << 10
 
 var knownSources = map[string]bool{
-	SourcePGProxy: true, SourceAppGateway: true, SourceAgentGateway: true, SourceHook: true, SourceAPI: true,
+	SourcePGProxy: true, SourceAppGateway: true, SourceAgentGateway: true, SourceHook: true, SourceAPI: true, SourceConnector: true,
 }
 
 func checkValue(v any, depth int) error {

@@ -47,6 +47,25 @@ type Service struct {
 	Observers []Observer
 	Actor     string // diary actor for decisions (default "system:decide")
 	Now       func() time.Time
+	// Enforcement is the deployment's mode: "enforce" (default) or "observe"
+	// (config enforcement.mode). An agent's own setting overrides it.
+	Enforcement string
+	// Spool keeps fail-path decisions the database could not take (nil =
+	// logged only); SpoolWorker drains it into the Diary.
+	Spool *Spool
+}
+
+// EnforcementFor is the effective mode for an agent: its own override
+// ("observe" or "enforce"), else the deployment's.
+func (s *Service) EnforcementFor(st control.State) string {
+	switch st.Enforcement {
+	case policy.ObserveMode, policy.EnforceMode:
+		return st.Enforcement
+	}
+	if s.Enforcement == policy.ObserveMode {
+		return policy.ObserveMode
+	}
+	return policy.EnforceMode
 }
 
 var _ Decider = (*Service)(nil)
@@ -161,6 +180,9 @@ func (s *Service) Decide(ctx context.Context, a action.Action) (Outcome, error) 
 	for attempt := 0; attempt < 3; attempt++ {
 		evalStart := time.Now()
 		in := policy.Input{Action: a, Agent: st, Access: acc, Context: pctx}
+		if s.EnforcementFor(st) == policy.ObserveMode {
+			in.Enforcement = policy.ObserveMode
+		}
 		res, err := s.Policy.Eval(ctx, in)
 		metrics.PolicyEval.Observe(time.Since(evalStart).Seconds())
 		if err != nil {
@@ -232,6 +254,10 @@ func (s *Service) persist(ctx context.Context, a action.Action, st control.State
 			"context":          in.Context,
 			"level_before":     st.Level.String(),
 			"agent_registered": st.Registered,
+		}
+		if in.Enforcement == policy.ObserveMode {
+			decisionJSON["enforcement"] = policy.ObserveMode
+			decisionJSON["observed"] = res.Observed
 		}
 		ts, err := s.insertAction(ctx, tx, a, res, decisionJSON, false, out.LatencyUS)
 		if err != nil {
@@ -338,6 +364,11 @@ func decidedEvent(a action.Action, res policy.Result, lvl control.Level) map[str
 	if res.GrantID != "" {
 		ev["grant_id"] = res.GrantID
 	}
+	if res.Observed != nil {
+		// Observe mode: what would have been enforced (and was not).
+		ev["enforcement"] = policy.ObserveMode
+		ev["observed"] = res.Observed
+	}
 	return ev
 }
 
@@ -364,13 +395,13 @@ func (s *Service) insertAction(ctx context.Context, tx pgx.Tx, a action.Action, 
 	var ts time.Time
 	err = tx.QueryRow(ctx, `
 		INSERT INTO actions (action_id, agent_id, instance_id, system, verb, action_hash, class, decision, rule_id, reason,
-			reversible, source, target, payload_summary, decision_json, fail_closed, latency_us, ts)
+			reversible, source, target, payload_summary, decision_json, fail_closed, latency_us, ts, observed)
 		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-			CASE WHEN $19 THEN GREATEST($18::timestamptz, now()) ELSE $18::timestamptz END)
+			CASE WHEN $19 THEN GREATEST($18::timestamptz, now()) ELSE $18::timestamptz END, $20)
 		RETURNING ts`,
 		a.ActionID, a.AgentID, a.InstanceID, a.System, string(a.Verb), a.Hash(), string(res.Class), string(res.Decision),
 		res.RuleID, res.Reason, a.Reversible, a.Source, target, summary, dj, failClosed, latencyUS, a.TS,
-		s.Now == nil).Scan(&ts) // an injected clock (tests) is authoritative
+		s.Now == nil, res.Observed != nil).Scan(&ts) // an injected clock (tests) is authoritative
 	if err != nil {
 		return time.Time{}, fmt.Errorf("insert action: %w", err)
 	}
@@ -502,7 +533,24 @@ func (s *Service) recordBestEffort(ctx context.Context, a action.Action, res pol
 		min.Target, min.PayloadSummary, min.Chain = map[string]any{}, action.PayloadSummary{}, nil
 		err = try(min, "target and payload omitted: the full record could not be stored")
 	}
-	if err != nil && s.Log != nil {
+	if err == nil {
+		return
+	}
+	// The database is unreachable: keep the decision in the local spool so
+	// it reaches the Diary later (never lost, never silent).
+	if s.Spool != nil {
+		if serr := s.Spool.append(spoolRecord{Action: a, Result: res, Extra: extra, LatencyUS: latencyUS, Actor: s.actor(ctx, a),
+			SpooledAt: time.Now().UTC()}); serr == nil {
+			if s.Log != nil {
+				s.Log.Warn("fail-path decision spooled locally; it is appended to the Diary when the database is back",
+					"action_id", a.ActionID, "err", err)
+			}
+			return
+		} else if s.Log != nil {
+			s.Log.Error("could not spool fail-path decision", "err", serr, "action_id", a.ActionID)
+		}
+	}
+	if s.Log != nil {
 		s.Log.Error("could not record fail-path decision", "err", err, "action_id", a.ActionID)
 	}
 }
@@ -523,4 +571,44 @@ func (s *Service) observe(out Outcome) {
 	if out.Held {
 		metrics.Held.WithLabelValues(string(r.Class), r.RuleID).Inc()
 	}
+}
+
+// Evaluate returns what policy decides for a, with the same inputs Decide
+// uses (control state, access profile, enrichers), but WITHOUT recording,
+// enforcing, stepping down or running observers. It is for actions that
+// already happened outside Fortik (a SaaS audit log): the verdict says what
+// Fortik would have done, never that it did anything. Errors are returned,
+// not converted to fail-closed outcomes: an unevaluated event must be shown
+// as unevaluated, not as a refusal.
+func (s *Service) Evaluate(ctx context.Context, a action.Action) (policy.Result, error) {
+	if err := a.Validate(); err != nil {
+		return policy.Result{}, err
+	}
+	a.Normalize(s.now())
+	st, err := s.Control.Get(ctx, a.AgentID)
+	if err != nil {
+		return policy.Result{}, fmt.Errorf("control state: %w", err)
+	}
+	var acc *access.PolicyInput
+	if s.Access != nil {
+		pi, err := s.Access.PolicyInput(ctx, a.AgentID, a.System)
+		if err != nil {
+			return policy.Result{}, fmt.Errorf("access profile: %w", err)
+		}
+		acc = &pi
+	}
+	var pctx map[string]any
+	for _, e := range s.Enrichers {
+		v, err := e.Enrich(ctx, a, st)
+		if err != nil {
+			return policy.Result{}, fmt.Errorf("enrich %s: %w", e.Key(), err)
+		}
+		if v != nil {
+			if pctx == nil {
+				pctx = map[string]any{}
+			}
+			pctx[e.Key()] = v
+		}
+	}
+	return s.Policy.Eval(ctx, policy.Input{Action: a, Agent: st, Access: acc, Context: pctx})
 }

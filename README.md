@@ -9,7 +9,20 @@ Fortik is an **authority broker for autonomous agents**. Before a risky action t
 
 Each agent call becomes a normalized **Action** and is classified **green, yellow or red** by deterministic OPA/Rego rules. Fortik then enforces that decision at the interception point and writes it to a hash-chained **Agent Diary**.
 
-> **Status: Phase 5 of 6 implemented, awaiting developer review.** Phase 5 (swarms and the communication map) adds:
+> **Status: all 6 MVP phases implemented. Post-MVP SaaS integration rollout: [docs/INTEGRATION_MILESTONES.md](docs/INTEGRATION_MILESTONES.md). Milestone 0 (cross-agent authority, receipts, coverage) is done; Milestone 1 (NetSuite) waits for a test account.**
+>
+> NetSuite, Salesforce, ServiceNow and SAP connect by **REST API or MCP Server**, chosen per method on one card per tenant: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md). NetSuite QuickStart MCP is verified live. The other methods are tested against local fakes only.
+>
+> Phase 6 summary: Phase 6 (pilot-ready) adds:
+> - **observe mode** (decide and record without enforcing; per deployment or per agent);
+> - the **SaaS copilot connector broker** (Fortik-issued OAuth clients; every token a decision; kill or disable revokes upstream);
+> - **pilot success metrics** (`GET /v1/metrics/pilot`);
+> - test gates: a 10,000-input **replay gate**, **chaos tests**, a **k6 load test** (200/s, p95 < 50 ms);
+> - **mTLS** between components, **Docker Compose** and **Helm** packaging, and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+>
+> See [docs/PHASE6_DESIGN.md](docs/PHASE6_DESIGN.md) and `scripts/demo-phase6.sh`. The plan's "Done means" still needs real Google Workspace, GitHub and AWS test accounts and 3 design partners ([docs/ROADMAP.md](docs/ROADMAP.md)).
+>
+> **Phase 5 (swarms and the communication map):**
 > - swarm detection (Max-5 breaker, spawn tree, copy surge, converging targets), one-click **kill-swarm** in 7 steps, and two-approver release;
 > - the **communication map**: 5-minute edges, team / agent / swarm / external / blast-radius views, path trace, time replay, hidden-signal rules, live updates;
 > - **shadow-agent discovery** (Postgres, GitHub, AWS, Google Workspace, unknown callers): discovered agents start ISOLATED with no owner;
@@ -45,11 +58,11 @@ Each agent call becomes a normalized **Action** and is classified **green, yello
 > - the level and agent-token APIs, and live events.
 >
 > Real Google, GitHub and AWS accounts are entered in the console under **Integrations**. Until then those systems fail closed.
-> Not built yet: pilot hardening (Phase 6).
 
 ## Quick start (local, no Docker needed)
 
 > **New here? Read [GETTING_STARTED.md](GETTING_STARTED.md).** It covers installing the prerequisites and running and understanding every phase, step by step.
+> Presenting Phases 1–5 live? Use [docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md) with `scripts/demo-helpers.sh`.
 
 Prerequisites: Go ≥ 1.23, Postgres ≥ 16 binaries (`initdb`, `pg_ctl`, `psql`), `opa` (for policy tests), `openssl`, `curl`, `python3`.
 
@@ -100,5 +113,6 @@ PGPASSWORD=$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01 psql -h 127.0.0.1 -p 6432 -U claud
 - [ARCHITECTURE](ARCHITECTURE.md) — components, request path, data model
 - [SECURITY](SECURITY.md) — threat model, fail-closed behaviour, secrets, known gaps
 - [DEVELOPMENT](DEVELOPMENT.md) — environment, tests, conventions
+- [INTEGRATIONS](docs/INTEGRATIONS.md) — NetSuite, Salesforce, ServiceNow and SAP: REST API or MCP Server
 - [API](docs/API.md) — endpoints and roles
 - [POLICIES](docs/POLICIES.md) — the rule catalogue and the adapter contract

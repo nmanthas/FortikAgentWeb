@@ -1,0 +1,10 @@
+Fortik {{ .Chart.AppVersion }} is installed as {{ include "fortik.fullname" . }}.
+
+Enforcement mode: {{ .Values.config.enforcement.mode }}
+  (observe: Fortik records what it would enforce; switch agents to enforce from the console)
+
+Before the first start you need:
+  - Secret {{ .Values.existingSecret }} (database-url, owner-database-url, redis-url, master-key or vault-token)
+  - TLS secret {{ .Values.tls.secretName }} (tls.crt, tls.key, ca.crt)
+  - the bootstrap secrets in the secret store: api_tokens, agent_tokens, diary_signing_key
+See docs/DEPLOYMENT.md.

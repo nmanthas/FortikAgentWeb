@@ -72,6 +72,7 @@ type Server struct {
 	diary    *diary.Diary
 	shadow   shadow.TrafficRecorder
 	mux      *http.ServeMux
+	public   *http.ServeMux // PublicPrefix routes (no agent token)
 }
 
 var prefixPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
@@ -111,9 +112,33 @@ func (s *Server) Mount(pattern string, h http.HandlerFunc) {
 	s.mux.HandleFunc(pattern, h)
 }
 
+// PublicPrefix is the only path prefix served without an agent token: the
+// connector broker's OAuth endpoints, where the copilot vendor authenticates
+// with its client secret and the browser with the upstream (Phase 6).
+const PublicPrefix = "/oauth/"
+
+// MountPublic adds a handler under PublicPrefix (no agent authentication;
+// the handler authenticates its caller itself).
+func (s *Server) MountPublic(pattern string, h http.HandlerFunc) {
+	if s.public == nil {
+		s.public = http.NewServeMux()
+	}
+	s.public.HandleFunc(pattern, h)
+}
+
+// PublicMounter adapts MountPublic to a Mount(pattern, h) interface.
+type PublicMounter struct{ S *Server }
+
+func (m PublicMounter) Mount(pattern string, h http.HandlerFunc) { m.S.MountPublic(pattern, h) }
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	if s.public != nil && strings.HasPrefix(r.URL.Path, PublicPrefix) {
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		s.public.ServeHTTP(w, r)
 		return
 	}
 	p, err := s.auth.Authenticate(r)

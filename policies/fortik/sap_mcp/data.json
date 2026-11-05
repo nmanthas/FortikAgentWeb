@@ -1,0 +1,5 @@
+{
+  "mapping_version": "2026-10-28.1",
+  "tools": {},
+  "_evidence": "Tool mapping for SAP MCP connections (sap_mcp). Empty on purpose: the tools come from a customer- or partner-managed MCP server in front of SAP (SAP publishes no native S/4HANA MCP endpoint that Fortik could verify), and no live server was available to read their names and argument schemas. Every tool is refused (POL-002) and none is offered to agents until it is added here with its verb (READ, WRITE, DELETE, EXECUTE) and operation, after reading the server's tools/list (console > Integrations > SAP > MCP Server > View tools)."
+}

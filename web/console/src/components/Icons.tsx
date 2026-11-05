@@ -280,6 +280,7 @@ export function SystemIcon({ system, size = 14 }: { system: string; size?: numbe
   if (s === 'a2a' || s === 'agents') return <IconUsers size={size} />;
   if (s === 'http') return <IconGlobe size={size} />;
   if (s === 'mcp') return <IconPlug size={size} />;
+  if (s.startsWith('netsuite')) return <IconDatabase size={size} />;
   if (s === 'memory' || s.startsWith('memory:')) return <IconBrain size={size} />;
   return <IconQuestion size={size} />;
 }

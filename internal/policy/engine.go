@@ -59,6 +59,7 @@ func (e *Engine) Version() string { return e.current.Load().version }
 // as an error; the caller must fail closed.
 func (e *Engine) Eval(ctx context.Context, in Input) (Result, error) {
 	c := e.current.Load()
+	captureInput(in)
 	raw, err := toValue(in)
 	if err != nil {
 		return Result{}, fmt.Errorf("policy input: %w", err)
@@ -78,11 +79,49 @@ func (e *Engine) Eval(ctx context.Context, in Input) (Result, error) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		return Result{}, fmt.Errorf("policy result: %w", err)
 	}
-	if err := r.validate(); err != nil {
+	if r.Observed != nil {
+		if err := r.validateObserved(in.Enforcement); err != nil {
+			return Result{}, err
+		}
+	} else if err := r.validate(); err != nil {
 		return Result{}, err
 	}
 	r.PolicyVersion = c.version
 	return r, nil
+}
+
+// validateObserved checks an observe-mode result: only valid when the input
+// asked for observe mode; the result itself is a plain allow (nothing
+// enforced: no reduced form, ladder change, hold or grant) and the observed
+// decision is a valid enforced result that would not have run as requested.
+func (r *Result) validateObserved(mode string) error {
+	if mode != ObserveMode {
+		return errors.New("policy result: observed decision without observe mode (fail closed)")
+	}
+	if r.Decision != Allow || len(r.ReducedForm) > 0 || r.LadderChange != nil || r.GrantID != "" || r.ApprovalsRequired != 0 {
+		return fmt.Errorf("policy result: observe-mode result must be a plain allow (got %s)", r.Decision)
+	}
+	if r.RuleID == "" {
+		return errors.New("policy result: missing rule_id")
+	}
+	switch r.Class {
+	case Green, Yellow, Red:
+	default:
+		return fmt.Errorf("policy result: invalid class %q", r.Class)
+	}
+	o := r.Observed
+	would := Result{Class: r.Class, Decision: o.Decision, ReducedForm: o.ReducedForm, LadderChange: o.LadderChange,
+		Reason: o.Reason, RuleID: o.RuleID, ApprovalsRequired: o.ApprovalsRequired}
+	if would.RuleID == "" {
+		would.RuleID = r.RuleID
+	}
+	if err := would.validate(); err != nil {
+		return fmt.Errorf("policy result: observed decision invalid: %w", err)
+	}
+	if o.Decision == Allow && o.LadderChange == nil {
+		return errors.New("policy result: observed block on a decision that was already a plain allow")
+	}
+	return nil
 }
 
 func (r *Result) validate() error {

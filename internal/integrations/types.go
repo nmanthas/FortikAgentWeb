@@ -31,27 +31,55 @@ type Field struct {
 	Help     string   `json:"help,omitempty"`
 	Options  []string `json:"options,omitempty"`
 	Default  any      `json:"default,omitempty"`
+	// Managed secrets are written by Fortik itself (e.g. OAuth tokens it
+	// obtained); they cannot be set through the API, are not shown in
+	// forms, and are deleted with the integration.
+	Managed bool `json:"managed,omitempty"`
+	// ShowWhen: the field applies only when another field of the same form
+	// has one of these values (e.g. client_secret only for one auth type).
+	// Forms hide it otherwise; stored values are kept.
+	ShowWhen map[string][]string `json:"show_when,omitempty"`
 }
 
-// Schema describes one integration type for the UI.
+// Transports a connection can use.
+const (
+	TransportREST   = "rest_api" // the provider's HTTP API, through Fortik's gateway or broker
+	TransportMCP    = "mcp"      // the provider's MCP server, through Fortik's MCP endpoint
+	TransportNative = "native"   // another wire protocol (Postgres, Temporal gRPC, Redis)
+)
+
+// Schema describes one connection type (one transport of one provider) for
+// the UI. Several connection types of one provider can belong to one
+// logical application integration (a tenant), at most one per transport.
 type Schema struct {
-	System string  `json:"system"` // google_workspace | github | aws | postgres
-	Title  string  `json:"title"`
-	Multi  bool    `json:"multi"` // postgres: many instances keyed postgres:<name>
-	Fields []Field `json:"fields"`
+	System string `json:"system"` // the connection type, e.g. netsuite (REST), netsuite_quickstart (MCP)
+	Title  string `json:"title"`
+	Multi  bool   `json:"multi"` // postgres: many instances keyed postgres:<name>
+	// OptionalInstance: both the single legacy key (netsuite) and
+	// instance keys (netsuite:<tenant>) are accepted.
+	OptionalInstance bool    `json:"optional_instance,omitempty"`
+	Provider         string  `json:"provider"`              // the application, e.g. netsuite
+	Transport        string  `json:"transport"`             // rest_api | mcp | native
+	Environment      string  `json:"environment,omitempty"` // provider-specific (netsuite: full | quickstart)
+	Fields           []Field `json:"fields"`
 }
 
 // Integration is one configured instance (never contains secret values).
 type Integration struct {
-	Key          string          `json:"key"` // "github" or "postgres:acme_prod"
-	System       string          `json:"system"`
-	Config       json.RawMessage `json:"config"`
-	SecretFields []string        `json:"secret_fields"` // names set, never values
-	Status       string          `json:"status"`        // unconfigured | configured | ok | error
-	LastTestedAt *time.Time      `json:"last_tested_at,omitempty"`
-	LastError    string          `json:"last_error,omitempty"`
-	UpdatedBy    string          `json:"updated_by"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	Key    string `json:"key"` // "github" or "postgres:acme_prod"
+	System string `json:"system"`
+	// IntegrationID is the logical application integration (provider
+	// tenant) this connection belongs to, e.g. netsuite:acme; Transport is
+	// how this connection reaches it.
+	IntegrationID string          `json:"integration_id"`
+	Transport     string          `json:"transport"`
+	Config        json.RawMessage `json:"config"`
+	SecretFields  []string        `json:"secret_fields"` // names set, never values
+	Status        string          `json:"status"`        // unconfigured | configured | ok | error
+	LastTestedAt  *time.Time      `json:"last_tested_at,omitempty"`
+	LastError     string          `json:"last_error,omitempty"`
+	UpdatedBy     string          `json:"updated_by"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 // Resolved is config + secrets for in-process use by adapters only.

@@ -22,31 +22,38 @@ const Header = "X-Fortik-Delegation"
 
 // Claims is the signed payload of a delegation token.
 type Claims struct {
-	DelegationID string    `json:"did"`
-	Root         string    `json:"root"`  // originating agent
-	Chain        []string  `json:"chain"` // agents in order: root ... current holder (the delegatee)
-	Depth        int       `json:"depth"` // len(Chain)-1
-	TaskID       string    `json:"task,omitempty"`
-	IssuedAt     time.Time `json:"iat"`
-	ExpiresAt    time.Time `json:"exp"`
+	DelegationID string   `json:"did"`
+	Root         string   `json:"root"`  // originating agent
+	Chain        []string `json:"chain"` // agents in order: root ... current holder (the delegatee)
+	Depth        int      `json:"depth"` // len(Chain)-1
+	TaskID       string   `json:"task,omitempty"`
+	// Scope is the delegated task's scope (already narrowed by every
+	// ancestor's); Corr correlates every hop and action of one delegated
+	// task back to the root DELEGATE. Both are covered by the MAC.
+	Scope     *TaskScope `json:"scope,omitempty"`
+	Corr      string     `json:"corr,omitempty"`
+	IssuedAt  time.Time  `json:"iat"`
+	ExpiresAt time.Time  `json:"exp"`
 }
 
 // Hop is one stored delegation (from -> to).
 type Hop struct {
-	DelegationID string     `json:"delegation_id"`
-	ParentID     string     `json:"parent_id,omitempty"`
-	Root         string     `json:"root_agent"`
-	From         string     `json:"from_agent"`
-	To           string     `json:"to_agent"`
-	Chain        []string   `json:"chain"`
-	Depth        int        `json:"depth"`
-	TaskID       string     `json:"task_id,omitempty"`
-	Channel      string     `json:"channel"` // a2a | mcp | spawn | hook_task
-	ActionID     string     `json:"action_id"`
-	Status       string     `json:"status"` // open | closed | expired | refused
-	CreatedAt    time.Time  `json:"created_at"`
-	ExpiresAt    time.Time  `json:"expires_at"`
-	ClosedAt     *time.Time `json:"closed_at,omitempty"`
+	DelegationID  string     `json:"delegation_id"`
+	ParentID      string     `json:"parent_id,omitempty"`
+	Root          string     `json:"root_agent"`
+	From          string     `json:"from_agent"`
+	To            string     `json:"to_agent"`
+	Chain         []string   `json:"chain"`
+	Depth         int        `json:"depth"`
+	TaskID        string     `json:"task_id,omitempty"`
+	Scope         *TaskScope `json:"task_scope,omitempty"`     // effective (narrowed) scope of the delegated task
+	CorrelationID string     `json:"correlation_id,omitempty"` // the root DELEGATE's action id
+	Channel       string     `json:"channel"`                  // a2a | mcp | spawn | hook_task
+	ActionID      string     `json:"action_id"`
+	Status        string     `json:"status"` // open | closed | expired | refused
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	ClosedAt      *time.Time `json:"closed_at,omitempty"`
 }
 
 // HopState is one upstream agent as policy sees it (input.context.delegation.chain[i]).
@@ -66,6 +73,10 @@ type PolicyContext struct {
 	Depth        int        `json:"depth"`
 	Root         string     `json:"root,omitempty"`
 	Chain        []HopState `json:"chain"` // UPSTREAM agents only (root first), excluding the executor
+	// TaskScopes: the scope of every delegated task the executor acts under
+	// (token and open inbound hops). The action must fit EVERY one (POL-605).
+	TaskScopes    []TaskScope `json:"task_scopes,omitempty"`
+	CorrelationID string      `json:"correlation_id,omitempty"`
 }
 
 var (

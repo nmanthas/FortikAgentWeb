@@ -120,6 +120,11 @@ func (c Claims) validate() error {
 		return fmt.Errorf("%w: task id too long", ErrInvalidToken)
 	case c.IssuedAt.IsZero() || !c.ExpiresAt.After(c.IssuedAt):
 		return fmt.Errorf("%w: bad validity window", ErrInvalidToken)
+	case len(c.Corr) > 64:
+		return fmt.Errorf("%w: correlation id too long", ErrInvalidToken)
+	}
+	if err := c.Scope.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
 	for _, a := range c.Chain {
 		if !agentIDPattern.MatchString(a) {

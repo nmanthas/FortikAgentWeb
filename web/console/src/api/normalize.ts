@@ -4,6 +4,7 @@
 // defaults ("—" in the UI), and unknown levels/classes are treated as the
 // most restrictive/most severe so the UI never understates risk.
 
+import { normObserved } from './phase6';
 import type {
   AgentMemoryView,
   ContainmentOp,
@@ -158,8 +159,12 @@ export function normAgent(raw: unknown): Agent {
   let o = isObj(raw) ? raw : {};
   if (isObj(o.agent)) o = { ...o, ...o.agent };
   const systems = pick(o, 'systems_24h', 'systems');
+  const enf = str(o.enforcement);
+  const eff = str(o.effective_enforcement);
   return {
     agentId: str(o.agent_id),
+    enforcement: enf === 'observe' || enf === 'enforce' || enf === 'default' ? enf : undefined,
+    effectiveEnforcement: eff === 'observe' || eff === 'enforce' ? eff : undefined,
     name: str(o.name),
     type: str(o.type),
     platform: str(o.platform),
@@ -261,6 +266,7 @@ export function normAction(raw: unknown): ActionRow {
     failClosed: bool(o.fail_closed),
     held: isObj(o.held) || o.held === true,
     undo,
+    observed: normObserved(isObj(o.decision_json) ? o.decision_json.observed : o.observed) ?? undefined,
   };
 }
 
@@ -462,7 +468,11 @@ export function normSchemas(raw: unknown): IntegrationSchema[] {
     system: str(s.system),
     title: str(s.title, str(s.system)),
     multi: bool(s.multi),
-    fields: (Array.isArray(s.fields) ? s.fields : []).filter(isObj).map(
+    // Managed fields (e.g. OAuth tokens Fortik obtained itself) are never entered in a form.
+    fields: (Array.isArray(s.fields) ? s.fields : [])
+      .filter(isObj)
+      .filter((f) => f.managed !== true)
+      .map(
       (f): SchemaField => ({
         key: str(f.key),
         label: str(f.label, str(f.key)),
@@ -473,6 +483,11 @@ export function normSchemas(raw: unknown): IntegrationSchema[] {
         help: optStr(f.help),
         options: Array.isArray(f.options) ? f.options.filter((x): x is string => typeof x === 'string') : undefined,
         default: f.default,
+        showWhen: isObj(f.show_when)
+          ? Object.fromEntries(
+              Object.entries(f.show_when).map(([k, v]) => [k, Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []]),
+            )
+          : undefined,
       }),
     ),
   }));

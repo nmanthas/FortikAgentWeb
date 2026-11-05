@@ -75,8 +75,8 @@ set +e; FORTIK_GATEWAY_URL="http://127.0.0.1:1" FORTIK_AGENT_TOKEN=x "$ROOT/bin/
 
 # --------------------------------------------------------------------------
 bold "B. Approvals — a held DROP TABLE can only be approved as the safe rename"
-PGPASSWORD=$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01 "$PGBIN/psql" -h 127.0.0.1 -p 6432 -U claude_code_01 -d acme_staging -X -q -c "CREATE TABLE IF NOT EXISTS scratch_reports (id int)" >/dev/null 2>&1 || true
-PGPASSWORD=$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01 "$PGBIN/psql" -h 127.0.0.1 -p 6432 -U claude_code_01 -d acme_staging -X -q -c "DROP TABLE scratch_reports" >/dev/null 2>&1 || true
+PGPASSWORD=$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01 "$PGBIN/psql" -h 127.0.0.1 -p "${FORTIK_PROXY_PORT:-6432}" -U claude_code_01 -d acme_staging -X -q -c "CREATE TABLE IF NOT EXISTS scratch_reports (id int)" >/dev/null 2>&1 || true
+PGPASSWORD=$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01 "$PGBIN/psql" -h 127.0.0.1 -p "${FORTIK_PROXY_PORT:-6432}" -U claude_code_01 -d acme_staging -X -q -c "DROP TABLE scratch_reports" >/dev/null 2>&1 || true
 HID=$(fdb "SELECT h.action_id FROM held_actions h JOIN actions a USING (action_id) WHERE h.agent_id='claude_code_01' AND h.outcome='pending' AND a.target->>'table'='scratch_reports' ORDER BY h.created_at DESC LIMIT 1")
 [[ -n "$HID" ]] && pass "DROP TABLE scratch_reports held ($HID)" || fail "no held action"
 api POST "/v1/held/$HID/approve" "$FORTIK_TOKEN_SECURITY" '{"reason":"cleanup approved","use_safe_form":false}' >/dev/null
@@ -90,12 +90,20 @@ say "$("$PGBIN/psql" -h 127.0.0.1 -p 55432 -U postgres -d acme_staging -X -A -t 
 bold "C. Timed suspension — GitHub off for this agent for 30 minutes"
 api POST /v1/overrides "$FORTIK_TOKEN_SECURITY" '{"scope":"agent","scope_id":"claude_code_01","system":"github","mode":"suspended","duration_seconds":1800,"reason":"reviewing a risky push"}' > "$TMP/ov"
 [[ "$(code)" == 201 ]] && pass "GitHub suspended until $(J 'd.get("expires_at","?")' < "$TMP/ov")" || fail "create override: $(code) $(cat "$TMP/ov")"
-hook "$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01" Bash '{"command":"gh pr merge 12 --repo acme/api"}'
-[[ "$(hrc)" == 2 ]] && pass "GitHub action refused while suspended: $(cut -c1-90 "$TMP/herr")" || fail "gh during suspension rc=$(hrc)"
+# gh pr view and a plain push are normally allowed: only the suspension
+# (POL-030) can refuse them, through the hook as well as the GitHub gateway.
+hook "$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01" Bash '{"command":"gh pr view 12 --repo acme/api"}'
+[[ "$(hrc)" == 2 ]] && grep -q POL-030 "$TMP/herr" && pass "gh through Claude Code refused by the suspension: $(cut -c1-90 "$TMP/herr")" || fail "gh during suspension rc=$(hrc) $(cat "$TMP/herr")"
+hook "$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01" Bash '{"command":"git push origin feature/login-fix"}'
+[[ "$(hrc)" == 2 ]] && grep -q POL-030 "$TMP/herr" && pass "git push refused by the suspension (POL-030)" || fail "git push during suspension rc=$(hrc) $(cat "$TMP/herr")"
+gw GET /gw/github/repos/acme/api "$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01" >/dev/null
+[[ "$(code)" == 403 ]] && grep -q POL-030 "$TMP/b" && pass "GitHub gateway refuses too (403 POL-030)" || fail "gateway during suspension: $(code)"
 hook "$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01" Bash '{"command":"ls -la"}'
 [[ "$(hrc)" == 0 ]] && pass "other work continues normally" || fail "ls rc=$(hrc)"
 OVID=$(J 'd["override_id"]' < "$TMP/ov"); api POST "/v1/overrides/$OVID/release" "$FORTIK_TOKEN_SECURITY" '{"reason":"review done"}' >/dev/null
 [[ "$(code)" == 200 ]] && pass "released early by security" || fail "release: $(code)"
+hook "$FORTIK_AGENT_TOKEN_CLAUDE_CODE_01" Bash '{"command":"gh pr view 12 --repo acme/api"}'
+[[ "$(hrc)" == 0 ]] && pass "after release, gh works again" || fail "gh after release rc=$(hrc) $(cat "$TMP/herr")"
 
 # --------------------------------------------------------------------------
 bold "UC1. Agent-to-agent bypass — A asks C to do what A itself may not"

@@ -20,7 +20,12 @@
       "http",
       "shell",
       "files",
-      "agents"
+      "agents",
+      "connector",
+      "netsuite",
+      "salesforce",
+      "servicenow",
+      "sap"
     ],
     "pg_destructive_ladder": "READ_ONLY",
     "pg_snapshot_row_threshold": 100,
@@ -40,6 +45,49 @@
       "staging"
     ],
     "aws_spend_approval_usd": 500,
-    "spend_approval_usd": 500
+    "spend_approval_usd": 500,
+    "netsuite": {
+      "mcp_writes_require_approval": true,
+      "payment_record_types": [
+        "vendorpayment",
+        "vendorprepayment",
+        "customerrefund",
+        "check",
+        "cashrefund",
+        "vendorreturnauthorization"
+      ],
+      "payment_approvals": 2,
+      "bank_detail_record_types": [
+        "customrecord_2663_entity_bank_details"
+      ],
+      "bank_field_patterns": [
+        "bank",
+        "iban",
+        "swift",
+        "achaccount",
+        "routing",
+        "accountnumber"
+      ],
+      "bank_field_record_types": [
+        "vendor",
+        "employee",
+        "customer",
+        "partner"
+      ],
+      "financial_setup_record_types": [
+        "accountingperiod",
+        "account",
+        "subsidiary",
+        "currency",
+        "taxtype",
+        "taxgroup",
+        "fiscalcalendar",
+        "accountingbook",
+        "fiscalperiod",
+        "taxjurisdiction",
+        "reconciliationrule",
+        "paymentmethod"
+      ]
+    }
   }
 }

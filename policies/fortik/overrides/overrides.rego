@@ -31,7 +31,26 @@ in_force contains o if {
 	some o in raw_active
 	is_object(o)
 	object.get(o, "status", "") in {"active", "blocked"}
-	object.get(o, "system", "") == act.system
+	override_covers(object.get(o, "system", ""))
+}
+
+override_covers(sys) if sys == act.system
+
+# A copilot connector's token reaches its upstream's systems (Phase 6): a
+# timed suspension of gmail, drive or github stops it too.
+override_covers(sys) if {
+	act.system == "connector"
+	ups := object.get(object.get(act, "target", {}), "upstream_systems", [])
+	is_array(ups)
+	sys in ups
+}
+
+# A shell command that reaches GitHub (gh, git push/fetch/clone) or AWS (the
+# aws CLI) is covered by that system's suspensions. Only ever stricter.
+override_covers(sys) if {
+	reaches := object.get(object.get(act, "target", {}), "reaches", [])
+	is_array(reaches)
+	sys in reaches
 }
 
 read_only(o) if o.mode == "read_only"

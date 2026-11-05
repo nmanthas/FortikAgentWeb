@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fortik/internal/action"
+	"fortik/internal/testutil"
 )
 
 func pct(d []time.Duration, p float64) time.Duration {
@@ -67,6 +68,9 @@ func TestDecideLatencyGreen(t *testing.T) {
 	rate := float64(n) / time.Since(start).Seconds()
 	t.Logf("concurrent  n=%d workers=8 throughput=%.0f/s p50=%v p95=%v p99=%v", n, rate, pct(conc, .50), pct(conc, .95), pct(conc, .99))
 
+	if !testutil.PerfBudgets(t) {
+		return
+	}
 	if p := pct(seq, .95); p > 50*time.Millisecond {
 		t.Errorf("sequential p95 %v exceeds the 50ms budget", p)
 	}

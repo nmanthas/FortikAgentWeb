@@ -1,4 +1,33 @@
-# Architecture (as built through Phase 1)
+# Architecture
+
+## As built through Phase 6
+
+```
+ agents ─┬─ psql / ORM ─────────────► Postgres proxy :6432 ──┐
+         ├─ Claude Code (PreToolUse) ► hook endpoint :8090 ──┤
+         ├─ MCP / A2A / HTTP egress ─► agentgateway ─gRPC──► agentgw callout :9091 ─┤
+         ├─ Gmail / Drive / GitHub ──► app gateway :8090 ────┤
+         ├─ AWS / GitHub tokens ─────► credential broker ────┤      every one calls
+         └─ SaaS copilot connectors ─► OAuth server /oauth/* ┘      the same Decide
+                                                                    (OPA rules + level
+ console / API :8080 (OIDC, roles) ── levels, containment,          + access profile +
+   approvals, overrides, undo, map, swarms, shadow, connectors      delegation chain +
+                                                                    swarm + baseline +
+ Postgres: control state, actions, Diary (hash chain), map,        overrides context)
+   alerts · Redis: counters, baselines · NATS: events
+ workers: delayed sends, override restore, memory promotion, map rollup,
+   shadow discovery, retention, Slack notifications
+```
+
+- **One Decide service** behind four interception points plus the broker and connector broker. Only the broker or a gateway holding the token can make an action run.
+- **Containment** (Phase 4) and **swarm** actions (Phase 5) are audited operations with per-step results.
+- **Observe mode** (Phase 6) records what would have been enforced.
+- **mTLS** between components, Docker Compose and Helm packaging, and the deployment guide (docs/DEPLOYMENT.md).
+- Per-phase detail: docs/PHASE2_DESIGN.md to docs/PHASE6_DESIGN.md. Every endpoint: docs/API.md. Every rule: docs/POLICIES.md.
+
+The rest of this page is the Phase 1 core, which is unchanged.
+
+# Phase 1 core
 
 ```
  agent (psql, ORM, Claude Code shell, text-to-SQL agent)

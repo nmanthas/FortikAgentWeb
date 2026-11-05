@@ -22,7 +22,81 @@ const (
 	// SystemMemory: agent memory stores (Postgres + pgvector), keyed
 	// memory:<name>; see internal/memory.
 	SystemMemory = "memory"
+
+	// SystemNotifySlack: a Slack-compatible incoming webhook that receives
+	// security alerts and owner notifications (internal/notify).
+	SystemNotifySlack = "notify_slack"
+
+	// SystemNetSuite: a NetSuite account reached through Fortik's gateway
+	// with OAuth 2.0 client credentials (internal/netsuite).
+	SystemNetSuite = "netsuite"
+
+	// SystemNetSuiteQuickStart: the NetSuite QuickStart MCP server, which
+	// Fortik connects to over Streamable HTTP with a personal access token
+	// (internal/nsquickstart). Transport mcp, business system netsuite.
+	SystemNetSuiteQuickStart = "netsuite_quickstart"
+
+	// SystemNetSuiteMCP: a full NetSuite account's MCP server (the NetSuite
+	// AI Connector Service), reached with OAuth 2.0 authorization code +
+	// PKCE tokens Fortik obtains for a NetSuite user (internal/nsquickstart).
+	SystemNetSuiteMCP = "netsuite_mcp"
 )
+
+// Providers (applications). A provider's connection types (schemas) are its
+// transports; one tenant of a provider is one logical integration.
+const (
+	ProviderNetSuite = "netsuite"
+
+	// NetSuite environments: a full NetSuite account (SuiteTalk REST web
+	// services, the AI Connector Service MCP server) or NetSuite QuickStart
+	// (the QuickStart MCP server).
+	EnvNetSuiteFull       = "full"
+	EnvNetSuiteQuickStart = "quickstart"
+)
+
+// connMeta is each connection type's provider, transport and environment.
+var connMeta = map[string]struct {
+	provider, transport, environment string
+	optionalInstance                 bool
+}{
+	SystemGoogle:             {SystemGoogle, TransportREST, "", false},
+	SystemGitHub:             {SystemGitHub, TransportREST, "", false},
+	SystemAWS:                {SystemAWS, TransportREST, "", false},
+	SystemPostgres:           {SystemPostgres, TransportNative, "", false},
+	SystemTemporal:           {SystemTemporal, TransportNative, "", false},
+	SystemCelery:             {SystemCelery, TransportNative, "", false},
+	SystemQueueWebhook:       {SystemQueueWebhook, TransportREST, "", false},
+	SystemMemory:             {SystemMemory, TransportNative, "", false},
+	SystemNotifySlack:        {SystemNotifySlack, TransportREST, "", false},
+	SystemNetSuite:           {ProviderNetSuite, TransportREST, EnvNetSuiteFull, true},
+	SystemNetSuiteQuickStart: {ProviderNetSuite, TransportMCP, EnvNetSuiteQuickStart, true},
+	SystemNetSuiteMCP:        {ProviderNetSuite, TransportMCP, EnvNetSuiteFull, true},
+	SystemSalesforce:         {ProviderSalesforce, TransportREST, "", true},
+	SystemSalesforceMCP:      {ProviderSalesforce, TransportMCP, "", true},
+	SystemServiceNow:         {ProviderServiceNow, TransportREST, "", true},
+	SystemServiceNowMCP:      {ProviderServiceNow, TransportMCP, "", true},
+	SystemSAP:                {ProviderSAP, TransportREST, "", true},
+	SystemSAPMCP:             {ProviderSAP, TransportMCP, "", true},
+}
+
+// bareKeyTypes are the instance-capable connection types whose bare key is
+// a connection of the provider's default tenant (provider:default).
+var bareKeyTypes = []string{SystemNetSuite, SystemSalesforce, SystemSalesforceMCP, SystemServiceNow, SystemServiceNowMCP, SystemSAP, SystemSAPMCP}
+
+func init() {
+	schemas = append(schemas, saasSchemas...)
+	for i := range schemas {
+		m, ok := connMeta[schemas[i].System]
+		if !ok {
+			panic("integrations: no provider/transport for " + schemas[i].System)
+		}
+		schemas[i].Provider, schemas[i].Transport, schemas[i].Environment, schemas[i].OptionalInstance = m.provider, m.transport, m.environment, m.optionalInstance
+	}
+}
+
+// QuickStartEndpoint is the documented QuickStart MCP endpoint (Oracle,
+// "Set up the QuickStart MCP server").
+const QuickStartEndpoint = "https://my.quickstartapi.netsuite.com/mcp"
 
 // Integration statuses (integrations.status).
 const (
@@ -151,6 +225,84 @@ var schemas = []Schema{
 		},
 	},
 	{
+		System: SystemNetSuite,
+		Title:  "NetSuite REST API (SuiteTalk)",
+		Fields: []Field{
+			{Key: "account_id", Label: "Account ID", Type: FieldText, Required: true,
+				Help: "Your NetSuite account ID as shown in Setup > Company > Company Information (e.g. 1234567, or 1234567_SB1 for a sandbox). Use a sandbox or test account."},
+			{Key: "client_id", Label: "Client ID", Type: FieldText, Required: true,
+				Help: "From the integration record you create for Fortik (Setup > Integration > Manage Integrations) with the client credentials (machine to machine) grant and the REST web services scope enabled."},
+			{Key: "certificate_id", Label: "Certificate ID", Type: FieldText, Required: true,
+				Help: "After uploading Fortik's public certificate in the OAuth 2.0 client credentials (M2M) setup and mapping it to the integration, an entity and a role, NetSuite shows a certificate ID. The role decides everything Fortik (and agents through it) can do: give it least privilege."},
+			{Key: "algorithm", Label: "Signing algorithm", Type: FieldSelect, Default: "PS256", Options: []string{"PS256", "ES256"},
+				Help: "PS256 for an RSA key (3072 bits or more recommended), ES256 for an EC P-256 key. It must match the key below."},
+			{Key: "scope", Label: "Scope", Type: FieldText, Default: "rest_webservices",
+				Help: "OAuth scope requested in the token assertion. rest_webservices is what the gateway and SuiteQL use."},
+			{Key: "agent_map", Label: "Agents", Type: FieldList,
+				Help: "One entry per agent that works in this account: fortik_agent_id=netsuite_entity_internal_id (the employee or entity the agent's own NetSuite activity is recorded under). Used to attribute audit records to agents; unmapped activity is not attributed to any agent."},
+			{Key: "activity_query", Label: "Activity query (SuiteQL)", Type: FieldTextarea,
+				Help: "Optional. Overrides the SuiteQL query Fortik uses to read record changes (system notes). Leave empty for the default; Test connection reports whether the default works in your account."},
+			{Key: "api_base", Label: "API base URL (advanced)", Type: FieldText,
+				Help: "Optional. Leave empty to use https://<account>.suitetalk.api.netsuite.com. Only for test endpoints."},
+			{Key: "private_key_pem", Label: "Private key (PEM)", Type: FieldTextarea, Secret: true, Required: true,
+				Help: "The private key of the certificate uploaded to NetSuite (PKCS#8, or PKCS#1 RSA / SEC1 EC). It never leaves Fortik; agents never receive NetSuite credentials."},
+		},
+	},
+	{
+		System: SystemNetSuiteQuickStart,
+		Title:  "NetSuite QuickStart MCP server",
+		Fields: []Field{
+			{Key: "name", Label: "Integration name", Type: FieldText, Default: "NetSuite QuickStart",
+				Help: "A name for this connection, shown in the console and the Diary."},
+			{Key: "tenant_label", Label: "QuickStart account / tenant label", Type: FieldText, Required: true,
+				Help: "How your team refers to this QuickStart company (e.g. \"Acme test company\"). A label only: QuickStart identifies the company from the token."},
+			{Key: "endpoint_url", Label: "MCP endpoint URL", Type: FieldText, Default: QuickStartEndpoint,
+				Help: "Leave as " + QuickStartEndpoint + " (Oracle's documented endpoint). Fortik connects only to hosts allowed in its configuration (mcp_upstreams.allowed_hosts), so a changed URL to any other host is refused at connection time."},
+			{Key: "transport", Label: "Transport", Type: FieldSelect, Default: "streamable_http", Options: []string{"streamable_http"},
+				Help: "QuickStart's MCP server uses Streamable HTTP."},
+			{Key: "auth_type", Label: "Authentication", Type: FieldSelect, Default: "personal_access_token", Options: []string{"personal_access_token"},
+				Help: "A QuickStart personal access token, sent upstream as Authorization: Bearer <token> by Fortik only."},
+			{Key: "token_expires_on", Label: "Token expiration date", Type: FieldText,
+				Help: "Optional, YYYY-MM-DD as shown when you created the token (default 30 days after creation). Fortik cannot read it from QuickStart; it uses it to warn before the token stops working."},
+			{Key: "personal_access_token", Label: "Personal access token", Type: FieldPassword, Secret: true, Required: true,
+				Help: "QuickStart: Menu > Administration > QuickStart settings > Personal access tokens > create a token named Fortik (keep the default read-only scope), then Copy token. It is shown only once. Paste only the token, without \"Bearer\". It acts with the QuickStart permissions of the user who created it; it is stored only in Fortik's secret store and never sent to agents or the browser."},
+		},
+	},
+	{
+		System: SystemNetSuiteMCP,
+		Title:  "NetSuite MCP server (AI Connector Service)",
+		Fields: []Field{
+			{Key: "account_id", Label: "Account ID", Type: FieldText, Required: true,
+				Help: "Your NetSuite account ID (Setup > Company > Company Information), e.g. 1234567 or 1234567_SB1. It must be the same account as this integration's REST connection, if any. Fortik derives the MCP, token and authorization endpoints from it."},
+			{Key: "client_id", Label: "Client ID", Type: FieldText, Required: true,
+				Help: "From the integration record for the NetSuite AI Connector Service (Setup > Integration > Manage Integrations): Public Client checked, Authorization Code Grant checked, the NetSuite AI Connector Service scope enabled, and Fortik's redirect URI below entered as a Redirect URI."},
+			{Key: "redirect_uri", Label: "Redirect URI", Type: FieldText, Default: "http://127.0.0.1:8080/v1/oauth/netsuite/callback",
+				Help: "Fortik's OAuth callback (the address you open the Fortik console at, followed by /v1/oauth/netsuite/callback). It must match a Redirect URI on the integration record exactly."},
+			{Key: "scope", Label: "Scope", Type: FieldText, Default: "mcp",
+				Help: "The OAuth scope value for the NetSuite AI Connector Service. Oracle's documentation names the scope in the integration record UI but not its value; third-party guides use mcp. Check your integration record."},
+			{Key: "tools_path", Label: "Tools", Type: FieldSelect, Default: "all", Options: []string{"all", "suiteapp/com.netsuite.mcpstandardtools"},
+				Help: "all: every custom tool in the account (…/services/mcp/v1/all). suiteapp/com.netsuite.mcpstandardtools: only the MCP Standard Tools SuiteApp's tools."},
+			{Key: "api_base", Label: "API base URL (advanced)", Type: FieldText,
+				Help: "Optional. Leave empty to use https://<account>.suitetalk.api.netsuite.com (and https://<account>.app.netsuite.com for authorization). Only for test endpoints."},
+			{Key: "oauth_tokens", Label: "OAuth tokens", Type: FieldPassword, Secret: true, Managed: true,
+				Help: "Obtained by Fortik when a NetSuite user authorizes this connection (Authorize). Never entered by hand."},
+		},
+	},
+	{
+		System: SystemNotifySlack,
+		Title:  "Slack notifications",
+		Fields: []Field{
+			{Key: "webhook_url", Label: "Incoming webhook URL", Type: FieldPassword, Secret: true, Required: true,
+				Help: "Slack: Apps > Incoming Webhooks > Add to a channel, then copy the https://hooks.slack.com/services/... URL. Anyone with this URL can post to the channel, so it is stored only in the secret store. Fortik POSTs {\"text\": ...} for each alert: its severity, kind, summary, the agent and the agent's owner."},
+			{Key: "min_severity", Label: "Minimum severity", Type: FieldSelect, Default: "info", Options: []string{"info", "warning", "high", "critical"},
+				Help: "Alerts below this severity are not posted. \"info\" includes the owner notification that a timed suspension was restored."},
+			{Key: "kinds", Label: "Only these alert kinds", Type: FieldList,
+				Help: "Optional. Leave empty to post every kind, e.g. override_restored, override_restore_blocked, delegation_bypass, swarm_detected, shadow_agent, hidden_signal."},
+			{Key: "console_url", Label: "Console URL", Type: FieldText,
+				Help: "Optional. The address people open the Fortik console at (e.g. https://fortik.example.com). Messages then link to the agent."},
+		},
+	},
+	{
 		System: SystemMemory,
 		Title:  "Agent memory store (PostgreSQL + pgvector)",
 		Multi:  true,
@@ -201,35 +353,100 @@ func copySchema(s Schema) Schema {
 		if d, ok := f.Default.([]string); ok {
 			f.Default = append([]string(nil), d...)
 		}
+		if f.ShowWhen != nil {
+			sw := make(map[string][]string, len(f.ShowWhen))
+			for k, v := range f.ShowWhen {
+				sw[k] = append([]string(nil), v...)
+			}
+			f.ShowWhen = sw
+		}
 		fields[i] = f
 	}
 	s.Fields = fields
 	return s
 }
 
-// ParseKey validates an integration key ("github", "postgres:acme_prod") and
-// returns its system. Errors wrap ErrInvalid.
+// ParseKey validates an integration (connection) key and returns its
+// system: "github", "postgres:acme_prod", "netsuite" (the legacy
+// single NetSuite REST connection) or "netsuite:acme". Errors wrap
+// ErrInvalid.
 func ParseKey(key string) (string, error) {
 	switch key {
-	case SystemGoogle, SystemGitHub, SystemAWS, SystemTemporal, SystemCelery, SystemQueueWebhook:
+	case SystemGoogle, SystemGitHub, SystemAWS, SystemTemporal, SystemCelery, SystemQueueWebhook, SystemNotifySlack, SystemNetSuiteQuickStart:
 		return key, nil
 	}
-	if name, ok := strings.CutPrefix(key, SystemPostgres+":"); ok {
-		if !postgresName.MatchString(name) {
-			return "", fmt.Errorf("%w: postgres upstream name must match ^[a-z][a-z0-9_]{0,62}$", ErrInvalid)
-		}
-		return SystemPostgres, nil
+	if slicesContains(bareKeyTypes, key) {
+		return key, nil
 	}
-	if name, ok := strings.CutPrefix(key, SystemMemory+":"); ok {
-		if !postgresName.MatchString(name) {
-			return "", fmt.Errorf("%w: memory store name must match ^[a-z][a-z0-9_]{0,62}$", ErrInvalid)
+	system, name, ok := strings.Cut(key, ":")
+	if ok {
+		switch system {
+		case SystemPostgres, SystemMemory, SystemNetSuite, SystemNetSuiteQuickStart, SystemNetSuiteMCP,
+			SystemSalesforce, SystemSalesforceMCP, SystemServiceNow, SystemServiceNowMCP, SystemSAP, SystemSAPMCP:
+			if !postgresName.MatchString(name) {
+				return "", fmt.Errorf("%w: the name after %q must match ^[a-z][a-z0-9_]{0,62}$", ErrInvalid, system+":")
+			}
+			return system, nil
 		}
-		return SystemMemory, nil
 	}
-	if key == SystemPostgres || key == SystemMemory {
+	if key == SystemPostgres || key == SystemMemory || key == SystemNetSuiteMCP {
 		return "", fmt.Errorf("%w: %s integrations are keyed %s:<name>", ErrInvalid, key, key)
 	}
-	return "", fmt.Errorf("%w: unknown integration %q (want google_workspace, github, aws, temporal, celery, queue_webhook, postgres:<name> or memory:<name>)", ErrInvalid, truncate(key, 80))
+	return "", fmt.Errorf("%w: unknown integration %q (want google_workspace, github, aws, temporal, celery, queue_webhook, notify_slack, netsuite[:<tenant>], netsuite_quickstart[:<tenant>], netsuite_mcp:<tenant>, salesforce[_mcp][:<tenant>], servicenow[_mcp][:<tenant>], sap[_mcp][:<tenant>], postgres:<name> or memory:<name>)", ErrInvalid, truncate(key, 80))
+}
+
+// LogicalID is the logical application integration a connection key
+// belongs to: provider:instance (netsuite_mcp:acme -> netsuite:acme), or,
+// for single-instance keys, provider:default (github -> github:default)
+// and netsuite:quickstart for the legacy QuickStart connection. Migration
+// 0018 derives the same ids.
+func LogicalID(key string) (provider, id string, err error) {
+	system, err := ParseKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	m := connMeta[system]
+	_, name, ok := strings.Cut(key, ":")
+	if !ok {
+		name = "default"
+		if system == SystemNetSuiteQuickStart {
+			name = "quickstart"
+		}
+	}
+	return m.provider, m.provider + ":" + name, nil
+}
+
+// ConnectionKey is the key of the connection of the given type for a
+// logical integration: the inverse of LogicalID (legacy single keys are
+// returned for their logical ids).
+func ConnectionKey(system, integrationID string) (string, error) {
+	m, ok := connMeta[system]
+	if !ok {
+		return "", fmt.Errorf("%w: unknown connection type %q", ErrInvalid, truncate(system, 64))
+	}
+	provider, name, ok := strings.Cut(integrationID, ":")
+	if !ok || provider != m.provider || !postgresName.MatchString(name) {
+		return "", fmt.Errorf("%w: %q is not a %s integration id", ErrInvalid, truncate(integrationID, 80), m.provider)
+	}
+	switch {
+	case system == SystemNetSuiteQuickStart && name == "quickstart", slicesContains(bareKeyTypes, system) && name == "default":
+		return system, nil
+	case !m.optionalInstance && !slicesContains([]string{SystemPostgres, SystemMemory}, system):
+		if name != "default" {
+			return "", fmt.Errorf("%w: %s has a single connection (integration %s:default)", ErrInvalid, system, m.provider)
+		}
+		return system, nil
+	}
+	return system + ":" + name, nil
+}
+
+func slicesContains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // SecretName is the secret-store name for one secret field of an

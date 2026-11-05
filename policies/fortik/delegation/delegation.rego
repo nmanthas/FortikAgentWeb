@@ -17,6 +17,13 @@
 #   POL-603 a DELEGATE to an agent the delegator's a2a profile does not list,
 #           or deeper than the profile's max_depth (self-delegation exempt)
 #   POL-604 the presented delegation token is invalid, expired or not the agent's
+#   POL-605 the action is outside a delegated task's scope: the systems, verbs
+#           or external destination domains the delegator declared on the
+#           DELEGATE (target.task_scope), narrowed by every ancestor's scope.
+#           Every scope the executor acts under must allow the action; an
+#           external action whose destination cannot be identified does not
+#           fit a domain-restricted scope (fail closed). A DELEGATE is exempt
+#           from the system and verb checks: the scope travels with it, narrowed.
 #
 # Every rule fails closed: a malformed context, chain, hop or depth denies.
 # The rules contribute to fortik.gates.deny (see gates.rego in this directory).
@@ -232,4 +239,130 @@ denials contains {"rule_id": "POL-603", "reason": sprintf("delegating would crea
 	not self_delegation
 	a2a_profile
 	new_depth > profile_max_depth
+}
+
+# --- POL-605: the delegated task's scope ------------------------------------------
+
+task_scopes := ts if {
+	present
+	not token_error
+	ts := object.get(deleg, "task_scopes", [])
+	is_array(ts)
+} else := []
+
+malformed contains "delegation task_scopes is not a list" if {
+	present
+	not token_error
+	not is_array(object.get(deleg, "task_scopes", []))
+}
+
+scope_list_ok(s, k) if {
+	xs := object.get(s, k, [])
+	is_array(xs)
+	every x in xs {
+		is_string(x)
+	}
+}
+
+malformed contains sprintf("delegation task scope %d is malformed", [i + 1]) if {
+	some i, s in task_scopes
+	not scope_ok(s)
+}
+
+scope_ok(s) if {
+	is_object(s)
+	scope_list_ok(s, "systems")
+	scope_list_ok(s, "verbs")
+	scope_list_ok(s, "domains")
+}
+
+# Where the action goes: a domain or host, recipients' domains, shell hosts.
+dests contains lower(d) if {
+	some k in ["domain", "host"]
+	d := object.get(tgt, k, "")
+	is_string(d)
+	d != ""
+}
+
+dests contains lower(trim_space(parts[1])) if {
+	some k in ["to", "cc", "bcc"]
+	xs := object.get(tgt, k, [])
+	is_array(xs)
+	some r in xs
+	is_string(r)
+	parts := split(r, "@")
+	count(parts) == 2
+	trim_space(parts[1]) != ""
+}
+
+dests contains lower(h) if {
+	xs := object.get(tgt, "external_hosts", [])
+	is_array(xs)
+	some h in xs
+	is_string(h)
+	h != ""
+}
+
+external_action if object.get(tgt, "external", false) == true
+
+external_action if {
+	n := object.get(tgt, "external_domains", 0)
+	is_number(n)
+	n > 0
+}
+
+domain_within(d, allowed) if {
+	some a in allowed
+	a != "-"
+	d == a
+}
+
+domain_within(d, allowed) if {
+	some a in allowed
+	a != "-"
+	endswith(d, concat("", [".", a]))
+}
+
+scope_violations contains sprintf("system %v is not among the task's systems %v", [act.system, sys]) if {
+	not is_delegate
+	some s in task_scopes
+	scope_ok(s)
+	sys := object.get(s, "systems", [])
+	count(sys) > 0
+	not act.system in sys
+}
+
+scope_violations contains sprintf("verb %v is not among the task's verbs %v", [verb, vs]) if {
+	not is_delegate
+	some s in task_scopes
+	scope_ok(s)
+	vs := object.get(s, "verbs", [])
+	count(vs) > 0
+	not verb in vs
+}
+
+scope_violations contains sprintf("external destination could not be identified, and the task allows only %v", [ds]) if {
+	external_action
+	count(dests) == 0
+	some s in task_scopes
+	scope_ok(s)
+	ds := object.get(s, "domains", [])
+	count(ds) > 0
+}
+
+scope_violations contains sprintf("destination %v is outside the task's domains %v", [d, ds]) if {
+	external_action
+	some s in task_scopes
+	scope_ok(s)
+	ds := object.get(s, "domains", [])
+	count(ds) > 0
+	some d in dests
+	not domain_within(d, ds)
+}
+
+denials contains {"rule_id": "POL-605", "reason": msg} if {
+	count(scope_violations) > 0
+	msg := sprintf("outside the delegated task's scope (correlation %v): %s", [
+		object.get(deleg, "correlation_id", "unknown"), min(scope_violations),
+	])
 }

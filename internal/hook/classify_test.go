@@ -357,3 +357,31 @@ func TestClassifyLimits(t *testing.T) {
 		t.Fatal("NUL not dynamic")
 	}
 }
+
+// Commands that talk to GitHub or AWS say so (target.reaches), so a timed
+// suspension of that system covers them (docs/PHASE3_DESIGN.md §5).
+func TestClassifyReachesOtherSystems(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		want []string
+	}{
+		{"gh pr view 12 --repo acme/api", []string{"github"}},
+		{"gh pr merge 12", []string{"github"}},
+		{"git push origin feature/x", []string{"github"}},
+		{"git fetch origin && git pull", []string{"github"}},
+		{"git clone https://github.com/acme/api", []string{"github"}},
+		{"git -c alias.p=push p origin main", []string{"github"}},
+		{"aws s3 ls s3://acme-reports", []string{"aws"}},
+		{"git status && git log -1", nil},
+		{"gh --version", nil},
+		{"ls -la", nil},
+	} {
+		r := ClassifyShell(tc.cmd, testEnv())
+		if !slices.Equal(r.Reaches, tc.want) {
+			t.Errorf("%q: reaches %v, want %v", tc.cmd, r.Reaches, tc.want)
+		}
+		if got := r.Target("/w")["reaches"]; got == nil {
+			t.Errorf("%q: target lacks reaches", tc.cmd)
+		}
+	}
+}

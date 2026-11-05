@@ -27,7 +27,7 @@ const CHANNEL_TEXT: Record<string, string> = { a2a: 'A2A', mcp: 'MCP', spawn: 's
 export function DelegationsTab({ agentId }: { agentId: string }) {
   const view = useAsync<DelegationView>((s) => getDelegations(agentId, s), [agentId]);
   useLiveRefresh(
-    (e) => e.eventType.startsWith('delegation.') || (e.eventType === 'action.decided' && /^POL-60[1-4]$/.test(String(e.data.rule_id ?? ''))),
+    (e) => e.eventType.startsWith('delegation.') || (e.eventType === 'action.decided' && /^POL-60[1-5]$/.test(String(e.data.rule_id ?? ''))),
     view.reload,
     800,
   );

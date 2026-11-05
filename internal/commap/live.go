@@ -25,20 +25,25 @@ const (
 // event bus, the same authentication and per-heartbeat re-validation as
 // /v1/events/stream), filtered and translated into map events:
 //
-//   - map.edges_updated (a rollup batch) -> one "edge.updated" per edge row,
-//     data = the full row for its window (the GET /v1/map edge shape); the
-//     console replaces rows by (from, to, verb, window_start).
+//   - map_events rows (a rollup batch, polled every MapPoll; not in the
+//     Diary since Phase 6) -> one "edge.updated" per edge row, data = the full
+//     row for its window (the GET /v1/map edge shape); the console replaces
+//     rows by (from, to, verb, window_start). Older map.edges_updated Diary
+//     events still translate the same way.
 //   - swarm.* events, and any event whose data names target_type "swarm"
 //     -> "swarm.updated", data = the swarm's cluster object as GET /v1/map
 //     returns it ({swarm_id, state, members, ...}) read when the event is
 //     sent, plus event_type and seq.
 //
-// Every SSE event has id = the Diary seq (the rows of one rollup event share
-// it), so a client resumes with Last-Event-ID.
+// Every SSE event has id "<diary seq>.<map_events id>" (both cursors), so a
+// client resumes both with Last-Event-ID; a plain "<seq>" resumes the Diary
+// and starts the map at its newest event.
 type Live struct {
 	bus  events.Bus
 	opts events.SSEOptions
 	svc  *Service
+	// MapPoll is how often each stream reads new map_events (default 1s).
+	MapPoll time.Duration
 }
 
 // NewLive returns the live map stream. Pass the same options as the
@@ -67,13 +72,22 @@ func (l *Live) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	after, resume, err := liveResumePoint(r)
+	after, mapAfter, resume, err := liveResumePoint(r)
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	// Edge updates come from map_events (not the Diary): start from its head
+	// unless the client resumes with a map cursor.
+	if l.svc != nil && mapAfter < 0 {
+		if mapAfter, err = l.svc.MapEventsHead(ctx); err != nil {
+			l.opts.Log.Error("map live: map events head unavailable", "err", err)
+			httpx.WriteError(w, http.StatusServiceUnavailable, "event stream unavailable")
+			return
+		}
+	}
 	if !resume && l.opts.Head != nil {
 		if after, err = l.opts.Head(ctx); err != nil {
 			l.opts.Log.Error("map live: diary head unavailable", "err", err)
@@ -94,13 +108,16 @@ func (l *Live) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Connection", "keep-alive")
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	cw := &liveWriter{w: w, rc: rc, timeout: l.opts.WriteTimeout, l: l, ctx: ctx}
+	cw := &liveWriter{w: w, rc: rc, timeout: l.opts.WriteTimeout, l: l, ctx: ctx, mapAfter: max(mapAfter, 0)}
 	if err := cw.write("retry: 3000\n\n"); err != nil {
 		return
 	}
 	hb := time.NewTicker(l.opts.Heartbeat)
 	defer hb.Stop()
+	poll := time.NewTicker(l.mapPoll())
+	defer poll.Stop()
 	last := after
+	cw.diarySeq = after
 	if resume && l.opts.Head != nil && l.opts.Backfill != nil {
 		head, err := l.opts.Head(ctx)
 		if err == nil && head > last {
@@ -115,6 +132,11 @@ func (l *Live) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-poll.C:
+			if err := cw.pollMap(); err != nil {
+				l.opts.Log.Warn("map live: map events unavailable; closing stream", "err", err)
+				return
+			}
 		case <-hb.C:
 			if l.opts.Revalidate != nil {
 				if err := l.opts.Revalidate(r); err != nil {
@@ -147,6 +169,48 @@ func (l *Live) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mapPoll is how often a stream checks map_events (default 1s).
+func (l *Live) mapPoll() time.Duration {
+	if l.MapPoll > 0 {
+		return l.MapPoll
+	}
+	return time.Second
+}
+
+// pollMap sends the edge rows of map_events newer than the stream's cursor.
+func (c *liveWriter) pollMap() error {
+	if c.l.svc == nil {
+		return nil
+	}
+	for {
+		evs, err := c.l.svc.MapEventsAfter(c.ctx, c.mapAfter, liveBackfillPage)
+		if err != nil {
+			return err
+		}
+		for _, me := range evs {
+			var d struct {
+				Edges []json.RawMessage `json:"edges"`
+			}
+			if json.Unmarshal(me.Payload, &d) == nil && me.Type == EventEdgesUpdated {
+				for _, e := range d.Edges {
+					if err := c.write("event: " + LiveEdgeUpdated + "\nid: " + c.cursor(c.diarySeq, me.ID) + "\ndata: " + string(e) + "\n\n"); err != nil {
+						return err
+					}
+				}
+			}
+			c.mapAfter = me.ID
+		}
+		if len(evs) < liveBackfillPage {
+			return nil
+		}
+	}
+}
+
+// cursor is the SSE event id: "<diary seq>.<map_events id>" (both resume points).
+func (c *liveWriter) cursor(seq, mapID int64) string {
+	return strconv.FormatInt(seq, 10) + "." + strconv.FormatInt(mapID, 10)
+}
+
 func (l *Live) backfill(ctx context.Context, cw *liveWriter, after, upto int64) (int64, error) {
 	for after < upto {
 		evs, err := l.opts.Backfill(ctx, after, upto, liveBackfillPage)
@@ -172,19 +236,30 @@ func (l *Live) backfill(ctx context.Context, cw *liveWriter, after, upto int64) 
 	return after, nil
 }
 
-func liveResumePoint(r *http.Request) (int64, bool, error) {
+// liveResumePoint parses Last-Event-ID (or after_seq): "<diary seq>" or
+// "<diary seq>.<map_events id>". mapAfter is -1 when the client gave no map
+// cursor (the stream then starts at the newest map event).
+func liveResumePoint(r *http.Request) (after, mapAfter int64, resume bool, err error) {
 	v := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
 	if v == "" {
 		v = r.URL.Query().Get("after_seq")
 	}
 	if v == "" {
-		return 0, false, nil
+		return 0, -1, false, nil
 	}
-	n, err := strconv.ParseInt(v, 10, 64)
+	seq, m, hasMap := strings.Cut(v, ".")
+	bad := fmt.Errorf("invalid Last-Event-ID / after_seq %q", clipName(v))
+	n, err := strconv.ParseInt(seq, 10, 64)
 	if err != nil || n < 0 {
-		return 0, false, fmt.Errorf("invalid Last-Event-ID / after_seq %q", clipName(v))
+		return 0, -1, false, bad
 	}
-	return n, true, nil
+	mapAfter = -1
+	if hasMap {
+		if mapAfter, err = strconv.ParseInt(m, 10, 64); err != nil || mapAfter < 0 {
+			return 0, -1, false, bad
+		}
+	}
+	return n, mapAfter, true, nil
 }
 
 // LiveEvent is one SSE event of the live map.
@@ -252,11 +327,13 @@ func (l *Live) Translate(ctx context.Context, ev events.Event) []LiveEvent {
 }
 
 type liveWriter struct {
-	w       http.ResponseWriter
-	rc      *http.ResponseController
-	timeout time.Duration
-	l       *Live
-	ctx     context.Context
+	w        http.ResponseWriter
+	rc       *http.ResponseController
+	timeout  time.Duration
+	l        *Live
+	ctx      context.Context
+	diarySeq int64 // last Diary seq sent
+	mapAfter int64 // last map_events id sent
 }
 
 func (c *liveWriter) write(s string) error {
@@ -268,8 +345,9 @@ func (c *liveWriter) write(s string) error {
 }
 
 func (c *liveWriter) emit(ev events.Event) error {
+	c.diarySeq = ev.Seq
 	for _, le := range c.l.Translate(c.ctx, ev) {
-		if err := c.write("event: " + le.Name + "\nid: " + strconv.FormatInt(ev.Seq, 10) + "\ndata: " + string(le.Data) + "\n\n"); err != nil {
+		if err := c.write("event: " + le.Name + "\nid: " + c.cursor(ev.Seq, c.mapAfter) + "\ndata: " + string(le.Data) + "\n\n"); err != nil {
 			return err
 		}
 	}

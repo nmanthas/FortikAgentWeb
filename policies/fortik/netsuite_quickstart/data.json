@@ -1,0 +1,141 @@
+{
+  "mapping_version": "2026-10-25.2",
+  "tools": {
+    "notifications": {
+      "verb": "READ",
+      "operation": "app_read"
+    },
+    "navigation_targets": {
+      "verb": "READ",
+      "operation": "app_read"
+    },
+    "todo_list": {
+      "verb": "READ",
+      "operation": "app_read"
+    },
+    "get_record_model": {
+      "verb": "READ",
+      "operation": "describe"
+    },
+    "list_records": {
+      "verb": "READ",
+      "operation": "list"
+    },
+    "read_record": {
+      "verb": "READ",
+      "operation": "get"
+    },
+    "read_record_sublist": {
+      "verb": "READ",
+      "operation": "get"
+    },
+    "get_record_apply_candidates": {
+      "verb": "READ",
+      "operation": "get"
+    },
+    "list_record_attachments": {
+      "verb": "READ",
+      "operation": "get"
+    },
+    "discover_preferences": {
+      "verb": "READ",
+      "operation": "preference_read"
+    },
+    "read_preferences": {
+      "verb": "READ",
+      "operation": "preference_read"
+    },
+    "report_catalog": {
+      "verb": "READ",
+      "operation": "report"
+    },
+    "describe_report": {
+      "verb": "READ",
+      "operation": "report"
+    },
+    "report_filter_values": {
+      "verb": "READ",
+      "operation": "report"
+    },
+    "configure_report": {
+      "verb": "READ",
+      "operation": "report"
+    },
+    "run_report": {
+      "verb": "READ",
+      "operation": "report"
+    },
+    "create_record": {
+      "verb": "WRITE",
+      "operation": "create"
+    },
+    "update_record": {
+      "verb": "WRITE",
+      "operation": "update"
+    },
+    "delete_record": {
+      "verb": "DELETE",
+      "operation": "delete"
+    },
+    "execute_record_action": {
+      "verb": "EXECUTE",
+      "operation": "record_action"
+    },
+    "execute_record_transform": {
+      "verb": "WRITE",
+      "operation": "transform"
+    },
+    "upload_temporary_file": {
+      "verb": "WRITE",
+      "operation": "upload_temp_file"
+    },
+    "set_record_attachment": {
+      "verb": "WRITE",
+      "operation": "attachment"
+    },
+    "send_record_email": {
+      "verb": "SEND",
+      "operation": "send_email"
+    },
+    "set_preferences": {
+      "verb": "WRITE",
+      "operation": "preference_write"
+    },
+    "dismiss_notification": {
+      "verb": "WRITE",
+      "operation": "dismiss_notification"
+    },
+    "submit_contact_support_request": {
+      "verb": "SEND",
+      "operation": "support_request"
+    }
+  },
+  "payment_transform_patterns": [
+    "pay",
+    "refund",
+    "deposit",
+    "credit",
+    "reverse",
+    "check"
+  ],
+  "protected_preferences": [
+    "MCP_SERVER_ENABLED"
+  ],
+  "high_impact_actions": [
+    "approve",
+    "void",
+    "unapply"
+  ],
+  "money_record_types": [
+    "banktransfer",
+    "bankdeposit",
+    "customerpayment",
+    "customerrefund",
+    "customerdeposit",
+    "vendorpayment",
+    "vendorprepayment",
+    "journalentry",
+    "recurringjournalentry"
+  ],
+  "_evidence": "2026-10-25 live QuickStart get_record_model (80 record types): transforms payVendorBill, invoiceToCustomerPayment, salesOrderToCustomerDeposit, creditVendorBill, createCreditMemoFromInvoice, reverseJournalEntry; record actions approve, void, unapply; no bank fields on Vendor/Customer; no last-modified fields on any record"
+}

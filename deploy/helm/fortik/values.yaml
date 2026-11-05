@@ -1,0 +1,121 @@
+# Fortik Helm chart (Phase 6 pilot). See docs/DEPLOYMENT.md.
+image:
+  repository: fortik
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# One replica by default. More need shared counters and events
+# (config.counters.provider: redis, config.events.provider: nats); the chart
+# refuses otherwise.
+replicaCount: 1
+
+# Credentials, from a Secret you create (never in values):
+#   database-url        postgres://fortik_app:...@host:5432/fortik?sslmode=verify-full
+#   owner-database-url  postgres://fortik_owner:...@...  (migrations job only)
+#   redis-url           redis://:password@redis:6379/0 (or rediss://)
+#   master-key          base64 32 bytes (encfile secret store only)
+#   vault-token         (vault secret store only)
+existingSecret: fortik-credentials
+
+# TLS for every listener (kubernetes.io/tls with ca.crt, e.g. from cert-manager).
+# The same CA verifies client certificates where mutual TLS is required.
+tls:
+  secretName: fortik-tls
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+# Where the fail spool lives (decisions made while Fortik's database is down).
+spool:
+  persistence: false    # true: a PVC; false: emptyDir (lost if the pod moves)
+  size: 1Gi
+  storageClass: ""
+
+# encfile secret store needs a writable volume; vault needs none (recommended).
+secretStore:
+  encfilePersistence: true
+  size: 1Gi
+  storageClass: ""
+
+networkPolicy:
+  enabled: true
+  # Namespaces whose pods may call Fortik (agents, agentgateway, the console's ingress).
+  allowFromNamespaces: []      # [] = any namespace
+  # Egress: Fortik calls Postgres, Redis, NATS and the upstream APIs (Google,
+  # GitHub, AWS, customer databases). Restrict with CIDRs when known.
+  egressCIDRs: ["0.0.0.0/0"]
+
+resources:
+  requests: {cpu: 250m, memory: 256Mi}
+  limits: {memory: 1Gi}
+
+podDisruptionBudget:
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# The Fortik configuration (fortik.yaml). database_url comes from the
+# Secret (FORTIK_DATABASE_URL); ${VAR} values are read from the environment.
+config:
+  log_level: info
+  enforcement:
+    mode: observe            # pilots start in observe mode; switch per agent, then here
+  api:
+    enabled: true
+    listen: 0.0.0.0:8443
+    tokens_secret: api_tokens
+    allowed_hosts: [fortik.example.com]
+    tls: {cert_file: /etc/fortik/tls/server.crt, key_file: /etc/fortik/tls/server.key}
+  policy: {dir: /etc/fortik/policies, hot_reload: false}
+  diary: {signing_key_secret: diary_signing_key}
+  secrets:
+    provider: encfile        # vault recommended: provider: vault, vault_addr: https://vault:8200
+    dir: /var/lib/fortik/secrets
+  fail:
+    green_read_allowlist: []
+    spool_dir: /var/lib/fortik/spool
+  pgproxy:
+    enabled: true
+    listen: 0.0.0.0:6432
+    agent_tokens_secret: agent_tokens
+    pre_query_timeout: 3s
+    tls_cert_file: /etc/fortik/tls/server.crt
+    tls_key_file: /etc/fortik/tls/server.key
+    tls_client_ca_file: /etc/fortik/tls/ca.crt
+    tls_client_auth: require
+    tls_required: true
+    upstreams: {}
+    data_labels:
+      - {match: public.customers, labels: [customer_pii]}
+  gateway:
+    enabled: true
+    listen: 0.0.0.0:8090
+    tls: {cert_file: /etc/fortik/tls/server.crt, key_file: /etc/fortik/tls/server.key, client_ca_file: /etc/fortik/tls/ca.crt, client_auth: require}
+  broker: {aws_session_ttl: 15m, postgres_session_ttl: 15m}
+  auth:
+    dev_login: {enabled: false}
+  events: {provider: nats, url: "nats://nats:4222"}
+  counters: {provider: redis, redis_url: "${REDIS_URL}"}
+  ladder: {yellow_holds_threshold: 3, yellow_window: 10m}
+  console: {enabled: true}
+  undo: {snapshot_retention: 720h, trash_retention: 168h}
+  delegation: {signing_key_secret: delegation/signing_key, token_ttl: 15m, max_depth: 5, bypass_origin_level: SUPERVISED}
+  population: {heartbeat_interval: 15s, stale_after: 45s, spike_cooldown: 5m}
+  approvals: {grant_ttl: 15m, allow_owner_approval: false, allow_token_pairs: false}
+  overrides: {sweep_interval: 5s}
+  agentgw:
+    enabled: true
+    listen: 0.0.0.0:9091
+    tls: {cert_file: /etc/fortik/tls/server.crt, key_file: /etc/fortik/tls/server.key, client_ca_file: /etc/fortik/tls/ca.crt, client_auth: require}
+    internal_hosts: []
+  hook: {proxy_hosts: []}
+  memory: {promotion_delay: 10m, promotion_poll: 30s, snapshot_every: 1h, snapshot_retention: 720h}
+  retention: {sweep_interval: 1h}
+  swarm: {breaker_n: 5, breaker_window: 10m, fanout_limit: 10, converge_n: 8, converge_window: 10m, sweep_interval: 15s}
+  map: {window: 5m, rollup_interval: 10s, retention: 720h, encoded_param_min: 256}
+  shadow: {sweep_interval: 15m, postgres_exclude_roles: [fortik_app, fortik_owner]}
+  baseline: {days: 14, sigma: 3, median_factor: 5, min_history_days: 3, min_count: 20}
+  connectors: {enabled: false}

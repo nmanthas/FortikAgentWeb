@@ -69,6 +69,20 @@ func next(t *testing.T, ch <-chan sseEvent, name string) sseEvent {
 	}
 }
 
+func nextAny(t *testing.T, ch <-chan sseEvent) sseEvent {
+	t.Helper()
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatal("stream ended")
+		}
+		return ev
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event")
+	}
+	return sseEvent{}
+}
+
 func TestLiveMapEvents(t *testing.T) {
 	e := newEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -86,6 +100,7 @@ func TestLiveMapEvents(t *testing.T) {
 			}
 			return nil
 		}}, e.svc)
+	live.MapPoll = 20 * time.Millisecond
 	mux := http.NewServeMux()
 	commap.NewHandler(e.svc, live, discard()).Register(mux)
 	srv := httptest.NewServer(withPrincipal(principal(authz.RoleAuditor), mux))
@@ -107,6 +122,10 @@ func TestLiveMapEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mapHead, err := e.svc.MapEventsHead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	out := e.decideAt(t, e.base.Add(time.Minute), pgRead("fin", "finance", "financial"))
 	e.rollup(t)
 	var row commap.Edge
@@ -115,9 +134,16 @@ func TestLiveMapEvents(t *testing.T) {
 		if err := json.Unmarshal([]byte(ev.data), &row); err != nil {
 			t.Fatal(err)
 		}
-		if seq, _ := strconv.ParseInt(ev.id, 10, 64); seq <= head {
-			t.Fatalf("event id %s not after head %d", ev.id, head)
+		// id = "<diary seq>.<map_events id>": the map cursor moved past the rollup.
+		_, m, ok := strings.Cut(ev.id, ".")
+		if mid, _ := strconv.ParseInt(m, 10, 64); !ok || mid <= mapHead {
+			t.Fatalf("event id %s not after map head %d", ev.id, mapHead)
 		}
+	}
+	// Phase 6: map telemetry is no longer written to the hash-chained Diary.
+	var inDiary int
+	if err := e.pool.QueryRow(ctx, `SELECT count(*) FROM diary WHERE event_type = $1`, commap.EventEdgesUpdated).Scan(&inDiary); err != nil || inDiary != 0 {
+		t.Fatalf("map.edges_updated in the Diary: %d %v", inDiary, err)
 	}
 	if row.From != "agent:fin" || row.Verb != "READ" || row.Count != 1 || row.WindowStart == nil || !row.WindowStart.Equal(e.base) ||
 		row.WorstClass != "green" || len(row.SampleActionIDs) != 1 || row.SampleActionIDs[0] != out.Action.ActionID ||
@@ -153,18 +179,27 @@ func TestLiveMapEvents(t *testing.T) {
 
 	// Resume from before the rollup: the missed rows are backfilled from the Diary.
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/map/live", nil)
-	req.Header.Set("Last-Event-ID", strconv.FormatInt(head, 10))
+	req.Header.Set("Last-Event-ID", strconv.FormatInt(head, 10)+"."+strconv.FormatInt(mapHead, 10))
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp2.Body.Close()
 	resumed := readSSE(resp2)
-	var again commap.Edge
-	for again.To != "store:postgres:finance" {
-		_ = json.Unmarshal([]byte(next(t, resumed, commap.LiveEdgeUpdated).data), &again)
+	// Both arrive, in either order (the Diary backfill and the map poll are
+	// separate sources).
+	gotEdge, gotSwarm := false, false
+	for !gotEdge || !gotSwarm {
+		ev := nextAny(t, resumed)
+		switch ev.name {
+		case commap.LiveEdgeUpdated:
+			var again commap.Edge
+			_ = json.Unmarshal([]byte(ev.data), &again)
+			gotEdge = gotEdge || again.To == "store:postgres:finance"
+		case commap.LiveSwarmUpdated:
+			gotSwarm = true
+		}
 	}
-	next(t, resumed, commap.LiveSwarmUpdated)
 
 	// Losing authorization ends the stream at the next heartbeat.
 	revoked.Store(true)
@@ -182,6 +217,7 @@ func TestLiveRequiresAuditor(t *testing.T) {
 		{principal(authz.RoleInterceptor), 403, "/v1/map/live"},
 		{nil, 401, "/v1/map/live"},
 		{principal(authz.RoleAuditor), 400, "/v1/map/live?after_seq=-1"},
+		{principal(authz.RoleAuditor), 400, "/v1/map/live?after_seq=3.x"},
 		{principal(authz.RoleAuditor), 400, "/v1/map/live?x=1"},
 	} {
 		rec := httptest.NewRecorder()

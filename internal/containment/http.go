@@ -56,6 +56,7 @@ func NewHandler(m *Manager, log *slog.Logger) *Handler {
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/containment", h.generic)
 	mux.HandleFunc("GET /v1/containment", h.list)
+	mux.HandleFunc("GET /v1/containment/{op_id}/receipt", h.receipt)
 	for _, op := range []string{OpSuspend, OpResume, OpIsolate, OpKill} {
 		mux.HandleFunc("POST /v1/agents/{id}/"+op, h.simple(op, TargetAgent, "id"))
 	}
@@ -299,4 +300,22 @@ func ownView(op Op, agentID string) Op {
 	}
 	op.Steps = steps
 	return op
+}
+
+// receipt: GET /v1/containment/{op_id}/receipt (auditor or security). The
+// evidence of what the operation is proven to have achieved, re-read now.
+func (h *Handler) receipt(w http.ResponseWriter, r *http.Request) {
+	if _, ok := authz.Require(w, r, authz.RoleAuditor, authz.RoleSecurity); !ok {
+		return
+	}
+	rc, err := h.m.Receipt(r.Context(), r.PathValue("op_id"))
+	if errors.Is(err, ErrNotFound) {
+		httpx.WriteError(w, http.StatusNotFound, "no such containment operation")
+		return
+	}
+	if err != nil {
+		h.internal(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, rc)
 }

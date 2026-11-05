@@ -331,3 +331,28 @@ func TestReleaseExtendPermanent(t *testing.T) {
 	}
 	f.verifyDiary(t)
 }
+
+// A shell action that reaches GitHub gets GitHub's overrides; one that
+// reaches nothing does not. Extra systems only ever add overrides.
+func TestEnricherAddsReachedSystems(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	gh := mustCreate(t, f, agentReq("code_agent_12", "github", ModeSuspended, time.Hour))
+	e := NewEnricher(f.store)
+	st, _ := f.ctl.Get(ctx, "code_agent_12")
+	shell := action.Action{AgentID: "code_agent_12", System: "shell", Target: map[string]any{"reaches": []any{"github", "shell", "github"}}}
+	v, err := e.Enrich(ctx, shell, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.(PolicyContext).Active; len(got) != 1 || got[0].OverrideID != gh.OverrideID {
+		t.Fatalf("shell reaching github: %+v", got)
+	}
+	v, err = e.Enrich(ctx, action.Action{AgentID: "code_agent_12", System: "shell", Target: map[string]any{"reaches": []any{}}}, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.(PolicyContext).Active; len(got) != 0 {
+		t.Fatalf("local shell command got overrides: %+v", got)
+	}
+}

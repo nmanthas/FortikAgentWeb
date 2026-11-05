@@ -29,9 +29,20 @@ var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 // `go test`, so CI needs only Go.
 func TestRegoSuite(t *testing.T) {
 	ctx := context.Background()
-	results, err := tester.Run(ctx, bundleDir())
+	modules, store, err := tester.Load([]string{bundleDir()}, nil)
 	if err != nil {
 		t.Fatalf("rego tests: %v", err)
+	}
+	// OPA's default per-test timeout (5 s) is a wall-clock budget that a
+	// loaded machine under -race can exceed; a deadline is not a policy
+	// failure, so allow more (opa test policies/ keeps the default).
+	ch, err := tester.NewRunner().SetStore(store).SetTimeout(2*time.Minute).Run(ctx, modules)
+	if err != nil {
+		t.Fatalf("rego tests: %v", err)
+	}
+	var results []*tester.Result
+	for r := range ch {
+		results = append(results, r)
 	}
 	if len(results) < 50 {
 		t.Fatalf("expected the full rego suite, got %d tests", len(results))

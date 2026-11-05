@@ -62,7 +62,7 @@ const (
 const Actor = "system:overrides"
 
 // Systems that can be suspended: every system Decide sees actions for.
-var Systems = []string{"gmail", "drive", "github", "aws", "postgres", "memory", "mcp", "a2a", "http", "shell", "files", "agents"}
+var Systems = []string{"gmail", "drive", "github", "aws", "postgres", "memory", "mcp", "a2a", "http", "shell", "files", "agents", "netsuite", "salesforce", "servicenow", "sap"}
 
 var (
 	ErrInvalid       = errors.New("invalid override")

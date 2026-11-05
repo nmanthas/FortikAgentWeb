@@ -236,6 +236,66 @@ else := object.union(base, {"grant_id": input.context.grant.grant_id}) if grante
 
 else := with_approvals
 
-result := object.union(with_reduced, {"ladder_change": ladder_change}) if ladder_change
+enforced_result := object.union(with_reduced, {"ladder_change": ladder_change}) if ladder_change
 
 else := with_reduced
+
+# --- Observe mode (Phase 6) -------------------------------------------------
+# input.enforcement == "observe": Fortik decides and records but does not
+# enforce the policy's opinion. Holds, denials and reduced forms become allow;
+# the would-be decision is kept under "observed"; no ladder change, no hold,
+# no reduced form. Never relaxed (data.fortik.observe.always_enforced):
+# unknown or unclassifiable actions and malformed context (fail closed),
+# levels and suspensions set by people (control gate, timed suspensions,
+# frozen swarms, memory cut), identity checks, and copy / rate caps.
+observe if input.enforcement == "observe"
+
+always_enforced_ids := {x | some x in data.fortik.observe.always_enforced}
+
+mandatory_gates := [g | some p in extra_ranked; g := p[1]; g.rule_id in always_enforced_ids]
+
+mandatory_findings := sort([[f.rule_id, f] | some f in findings; f.rule_id in always_enforced_ids; mandatory_finding_refuses(f)])
+
+mandatory_finding_refuses(f) if f.deny == true
+
+mandatory_finding_refuses(f) if f.hold == true
+
+mandatory_finding_refuses(f) if f.class == "red"
+
+# The refusal observe mode keeps: {rule_id, reason, class}.
+mandatory := {"rule_id": control.gate.rule_id, "reason": control.gate.reason, "class": class} if {
+	control.gate
+} else := {"rule_id": mandatory_gates[0].rule_id, "reason": mandatory_gates[0].reason, "class": class} if {
+	count(mandatory_gates) > 0
+} else := {"rule_id": mandatory_findings[0][1].rule_id, "reason": mandatory_findings[0][1].reason, "class": mandatory_findings[0][1].class} if {
+	count(mandatory_findings) > 0
+}
+
+observed_block := {k: v |
+	some k, v in enforced_result
+	k in {"decision", "rule_id", "reason", "reduced_form", "ladder_change", "approvals_required"}
+}
+
+observe_result := {
+	"class": class,
+	"decision": "deny",
+	"rule_id": mandatory.rule_id,
+	"reason": mandatory.reason,
+	"matched": matched,
+} if {
+	mandatory
+} else := enforced_result if {
+	enforced_result.decision == "allow"
+	not enforced_result.ladder_change
+} else := {
+	"class": class,
+	"decision": "allow",
+	"rule_id": rule_id,
+	"reason": sprintf("observe mode: would %s: %s", [enforced_result.decision, reason]),
+	"matched": matched,
+	"observed": observed_block,
+}
+
+result := observe_result if observe
+
+else := enforced_result

@@ -285,3 +285,111 @@ func widensMCP(n, p MCPProfile, hadPrev bool) bool {
 	}
 	return false
 }
+
+// NetSuiteProfile (Milestone 1): {"mode":"none|read_only|read_write",
+// "record_types":["customer","salesorder"] | ["*"],"suiteql":true|false}.
+// record_types are NetSuite REST record type names (lower-cased; also the
+// SuiteQL tables a query may name); ["*"] is every type. suiteql allows
+// SuiteQL queries (subject to record_types). All three are required.
+//
+// quickstart_tools (optional) narrows the NetSuite QuickStart MCP tools the
+// agent may call (and sees in tools/list): ["*"] or tool names. Absent means
+// every tool the mode allows (read_only: read tools only).
+//
+// integrations (optional) limits the agent to some NetSuite tenants (logical
+// integrations, e.g. netsuite:acme) on every transport: ["*"] or ids.
+// Absent means every tenant.
+type NetSuiteProfile struct {
+	Mode            string   `json:"mode"`
+	RecordTypes     []string `json:"record_types"`
+	SuiteQL         *bool    `json:"suiteql"`
+	QuickStartTools []string `json:"quickstart_tools,omitempty"`
+	Integrations    []string `json:"integrations,omitempty"`
+}
+
+var integrationIDPattern = regexp.MustCompile(`^netsuite:[a-z][a-z0-9_]{0,62}$`)
+
+// AllowsIntegration reports whether integrations permits a NetSuite tenant
+// (an absent list permits every tenant).
+func (p NetSuiteProfile) AllowsIntegration(id string) bool {
+	return p.Integrations == nil || slices.Contains(p.Integrations, "*") || slices.Contains(p.Integrations, id)
+}
+
+var (
+	netsuiteTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
+	quickstartTool      = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+)
+
+// AllowsQuickStartTool reports whether quickstart_tools permits tool (an
+// absent list permits every tool; the mode is checked separately).
+func (p NetSuiteProfile) AllowsQuickStartTool(tool string) bool {
+	return p.QuickStartTools == nil || slices.Contains(p.QuickStartTools, "*") || slices.Contains(p.QuickStartTools, tool)
+}
+
+func parseNetSuite(raw json.RawMessage) (NetSuiteProfile, error) {
+	var p NetSuiteProfile
+	if err := decodeStrict(raw, &p); err != nil {
+		return p, err
+	}
+	if err := oneOf("mode", p.Mode, ModeNone, ModeReadOnly, ModeReadWrite); err != nil {
+		return p, err
+	}
+	if p.SuiteQL == nil {
+		return p, invalid("netsuite: suiteql is required (true or false)")
+	}
+	if p.RecordTypes == nil {
+		return p, invalid("netsuite: record_types is required (use [\"*\"] for every type)")
+	}
+	if p.QuickStartTools != nil {
+		if slices.Contains(p.QuickStartTools, "*") && len(p.QuickStartTools) != 1 {
+			return p, invalid("netsuite: quickstart_tools is either [\"*\"] or a list of tool names")
+		}
+		if !slices.Contains(p.QuickStartTools, "*") {
+			tools, err := normList("netsuite: quickstart_tools", p.QuickStartTools, func(s string) (string, error) {
+				if !quickstartTool.MatchString(s) {
+					return "", invalid("netsuite: quickstart_tools entry %q must be a QuickStart tool name", s)
+				}
+				return s, nil
+			})
+			if err != nil {
+				return p, err
+			}
+			p.QuickStartTools = tools
+		}
+	}
+	if p.Integrations != nil {
+		if slices.Contains(p.Integrations, "*") && len(p.Integrations) != 1 {
+			return p, invalid("netsuite: integrations is either [\"*\"] or a list of integration ids")
+		}
+		if !slices.Contains(p.Integrations, "*") {
+			ids, err := normList("netsuite: integrations", p.Integrations, func(s string) (string, error) {
+				if !integrationIDPattern.MatchString(s) {
+					return "", invalid("netsuite: integrations entry %q must be a NetSuite integration id such as netsuite:acme", s)
+				}
+				return s, nil
+			})
+			if err != nil {
+				return p, err
+			}
+			p.Integrations = ids
+		}
+	}
+	if slices.Contains(p.RecordTypes, "*") {
+		if len(p.RecordTypes) != 1 {
+			return p, invalid("netsuite: record_types is either [\"*\"] or a list of types")
+		}
+		return p, nil
+	}
+	types, err := normList("netsuite: record_types", p.RecordTypes, func(s string) (string, error) {
+		s = strings.ToLower(s)
+		if !netsuiteTypePattern.MatchString(s) {
+			return "", invalid("netsuite: record type %q must be a NetSuite record type name", s)
+		}
+		return s, nil
+	})
+	if err != nil {
+		return p, err
+	}
+	p.RecordTypes = types
+	return p, nil
+}

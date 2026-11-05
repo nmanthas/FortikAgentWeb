@@ -127,6 +127,17 @@ func (g *Google) settings(ctx context.Context) (googleSettings, *shadow.ScanResu
 	return s, nil
 }
 
+// AccessToken returns an Admin SDK access token for scopes through the
+// google_workspace integration (service account, domain-wide delegation).
+// The connector broker uses it to read the Reports API (Phase 6).
+func (g *Google) AccessToken(ctx context.Context, scopes ...string) (string, error) {
+	s, bad := g.settings(ctx)
+	if bad != nil {
+		return "", errors.New(bad.Detail)
+	}
+	return g.token(ctx, s, scopes...)
+}
+
 func (g *Google) token(ctx context.Context, s googleSettings, scopes ...string) (string, error) {
 	cfg, err := googleoauth.JWTConfigFromJSON(s.saJSON, scopes...)
 	if err != nil {

@@ -37,6 +37,9 @@ export function InstancesTab({ agent }: { agent: Agent }) {
   const over = v !== undefined && cap !== null && v.live > cap;
   const extra = v && cap !== null ? Math.max(0, v.live - cap) : 0;
   const canPause = hasRole(me, 'security') || isOwner(me, agent);
+  // Copies refused at registration (over the cap or the type's population)
+  // never become live and never get credentials; they are counted here.
+  const refused = v ? v.instances.filter((i) => i.status === 'refused').length : 0;
 
   return (
     <>
@@ -50,6 +53,11 @@ export function InstancesTab({ agent }: { agent: Agent }) {
               {v.live} of {cap ?? '—'}
             </span>
             <span className="muted">live copies vs. copy cap</span>
+            {refused > 0 && (
+              <span className="chip red" data-testid="refused-count" title="Refused at registration: no credentials were issued">
+                {refused} refused, no credentials
+              </span>
+            )}
             <span className="spacer" />
             <button className="btn danger" disabled={!canPause || !over} onClick={() => setConfirm(true)} aria-label={`Pause extra copies of ${id}`}>
               Pause extra

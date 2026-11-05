@@ -61,6 +61,10 @@ type Server struct {
 	LoopbackHosts bool
 	AllowedHosts  []string
 
+	// EnforcementMode is the deployment's mode (config enforcement.mode:
+	// "enforce" or "observe"); agents may override it (Phase 6).
+	EnforcementMode string
+
 	auth *TokenAuth
 	st   *serverState
 }
@@ -130,6 +134,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents/{id}", s.require(RoleAuditor, s.getAgent))
 	mux.HandleFunc("PATCH /v1/agents/{id}", s.require(RoleSecurity, s.patchAgent))
 	mux.HandleFunc("PUT /v1/agents/{id}/level", s.setLevel) // security or owner: checked in the handler
+	mux.HandleFunc("PUT /v1/agents/{id}/enforcement", s.setEnforcement)
+	mux.HandleFunc("GET /v1/enforcement", s.getEnforcement)
+	mux.HandleFunc("GET /v1/metrics/pilot", s.pilotMetrics)
 	mux.HandleFunc("POST /v1/agents/{id}/tokens", s.require(RoleSecurity, s.issueAgentToken))
 	mux.HandleFunc("DELETE /v1/agents/{id}/tokens", s.require(RoleSecurity, s.revokeAgentTokens))
 	mux.HandleFunc("GET /v1/agents/{id}/stats", s.require(RoleAuditor, s.agentStats))

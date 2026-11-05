@@ -257,6 +257,10 @@ func Parse(system string, raw json.RawMessage) (any, error) {
 		return parseHTTP(raw)
 	case "mcp":
 		return parseMCP(raw)
+	case "netsuite":
+		return parseNetSuite(raw)
+	case "salesforce", "servicenow", "sap":
+		return parseSaaS(system, raw)
 	default:
 		return nil, invalid("unknown system %q (one of %s)", system, strings.Join(Systems, ", "))
 	}

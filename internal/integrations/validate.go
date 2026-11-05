@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -39,6 +40,13 @@ var (
 	// exclude kombu's priority separator and anything that is not printable.
 	temporalNSRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$`)
 	celeryQueue  = regexp.MustCompile(`^[A-Za-z0-9_.:@-]{1,200}$`)
+	alertKind    = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	// NetSuite account ids: digits/letters, optionally _SB1 / _RP etc.
+	netsuiteAccount  = regexp.MustCompile(`^[A-Za-z0-9]{1,20}(_[A-Za-z0-9]{1,10})?$`)
+	netsuiteAgentMap = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}=[0-9]{1,18}$`)
+	isoDate          = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+	oauthClientID    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$`)
+	oauthScope       = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}( [A-Za-z0-9_.:-]{1,64}){0,7}$`)
 )
 
 func invalid(format string, a ...any) error {
@@ -128,6 +136,68 @@ var configValidators = map[string]func(any) error{
 		})
 	},
 	"queue_webhook.url": func(v any) error { return checkURL(v.(string)) },
+	"notify_slack.console_url": func(v any) error {
+		if v.(string) == "" {
+			return nil
+		}
+		return checkURL(v.(string))
+	},
+	"netsuite.api_base": func(v any) error {
+		if v.(string) == "" {
+			return nil
+		}
+		return checkURL(v.(string))
+	},
+	"netsuite.account_id": func(v any) error {
+		return match(netsuiteAccount, v.(string), "a NetSuite account ID such as 1234567 or 1234567_SB1")
+	},
+	"netsuite.agent_map": func(v any) error {
+		return eachString(v, func(s string) error {
+			return match(netsuiteAgentMap, s, "entries of the form fortik_agent_id=netsuite_entity_internal_id")
+		})
+	},
+	"netsuite_mcp.account_id": func(v any) error {
+		return match(netsuiteAccount, v.(string), "a NetSuite account ID such as 1234567 or 1234567_SB1")
+	},
+	"netsuite_mcp.client_id": func(v any) error {
+		return match(oauthClientID, v.(string), "the integration record's client ID (letters, digits and - _ .; at most 200)")
+	},
+	"netsuite_mcp.redirect_uri": func(v any) error { return checkRedirectURI(v.(string)) },
+	"netsuite_mcp.scope": func(v any) error {
+		return match(oauthScope, v.(string), "space-separated scope values of letters, digits and _ . : -")
+	},
+	"netsuite_mcp.api_base": func(v any) error {
+		if v.(string) == "" {
+			return nil
+		}
+		return checkURL(v.(string))
+	},
+	"netsuite_quickstart.name":         func(v any) error { return checkLabel(v.(string), 100) },
+	"netsuite_quickstart.tenant_label": func(v any) error { return checkLabel(v.(string), 100) },
+	"netsuite_quickstart.endpoint_url": func(v any) error {
+		if err := checkURL(v.(string)); err != nil {
+			return err
+		}
+		if u, _ := url.Parse(v.(string)); u.Path == "" || u.Path == "/" {
+			return errors.New("must include the MCP path, e.g. " + QuickStartEndpoint)
+		}
+		return nil
+	},
+	"netsuite_quickstart.token_expires_on": func(v any) error {
+		s := v.(string)
+		if !isoDate.MatchString(s) {
+			return errors.New("must be a date YYYY-MM-DD")
+		}
+		if _, err := time.Parse("2006-01-02", s); err != nil {
+			return errors.New("must be a valid date YYYY-MM-DD")
+		}
+		return nil
+	},
+	"notify_slack.kinds": func(v any) error {
+		return eachString(v, func(s string) error {
+			return match(alertKind, s, "alert kinds of lower-case letters, digits and _ (at most 64)")
+		})
+	},
 }
 
 // secretValidators check (and may normalise, e.g. trim) one secret value.
@@ -156,7 +226,25 @@ var secretValidators = map[string]func(string) (string, error){
 		}
 		return s, nil
 	},
-	"celery.redis_url": checkRedisURL,
+	"celery.redis_url":         checkRedisURL,
+	"netsuite.private_key_pem": checkAnyPrivateKeyPEM,
+	"netsuite_quickstart.personal_access_token": func(s string) (string, error) {
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(strings.ToLower(s), "bearer ") {
+			return "", errors.New("paste only the token, without the \"Bearer \" prefix")
+		}
+		if len(s) < 16 || len(s) > 8192 || strings.IndexFunc(s, func(r rune) bool { return r <= ' ' || r > '~' }) >= 0 {
+			return "", errors.New("must be the QuickStart personal access token as copied (16-8192 visible ASCII characters, no spaces)")
+		}
+		return s, nil
+	},
+	"notify_slack.webhook_url": func(s string) (string, error) {
+		s = strings.TrimSpace(s)
+		if err := checkURL(s); err != nil {
+			return "", errors.New("must be the https incoming webhook URL (plain http only for loopback test endpoints), without query")
+		}
+		return s, nil
+	},
 	"queue_webhook.secret": func(s string) (string, error) {
 		s = strings.TrimSpace(s)
 		if len(s) < 16 || len(s) > 1024 || strings.IndexFunc(s, unicode.IsControl) >= 0 {
@@ -332,6 +420,9 @@ func decodeField(system string, f Field, r json.RawMessage) (any, error) {
 }
 
 func crossValidate(system string, cfg map[string]any) error {
+	if err := saasCross(system, cfg); err != nil {
+		return err
+	}
 	switch system {
 	case SystemGoogle:
 		primary, _ := cfg["primary_domain"].(string)
@@ -376,6 +467,9 @@ func validateSecrets(s Schema, in map[string]*string) (map[string]string, []stri
 		}
 		if !f.Secret {
 			return nil, nil, invalid("%s is not a secret field: send it under \"config\"", k)
+		}
+		if f.Managed {
+			return nil, nil, invalid("%s is managed by Fortik and cannot be set through the API", k)
 		}
 		if v == nil {
 			if f.Required {
@@ -457,6 +551,24 @@ func checkURL(s string) error {
 	default:
 		return errors.New("must use https")
 	}
+}
+
+// checkRedirectURI accepts an absolute http(s) URL without fragment (an
+// OAuth redirect URI; http only for loopback, as for every other URL).
+func checkRedirectURI(s string) error {
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" || u.RawQuery != "" {
+		return errors.New("must be an absolute URL such as https://fortik.example.com/v1/oauth/netsuite/callback, without credentials, query or fragment")
+	}
+	return checkURL(s)
+}
+
+// checkLabel accepts free text for display: no control characters.
+func checkLabel(s string, max int) error {
+	if len(s) > max || strings.IndexFunc(s, unicode.IsControl) >= 0 {
+		return fmt.Errorf("must be at most %d characters without control characters", max)
+	}
+	return nil
 }
 
 func checkHost(s string) error {
@@ -597,4 +709,24 @@ func parseRSAPrivateKey(s string) (*rsa.PrivateKey, error) {
 	default:
 		return nil, errors.New("must be a PEM private key (-----BEGIN RSA PRIVATE KEY----- or -----BEGIN PRIVATE KEY-----)")
 	}
+}
+
+// checkAnyPrivateKeyPEM accepts an RSA or EC private key (PKCS#8, PKCS#1,
+// SEC1). The message never contains any part of the key.
+func checkAnyPrivateKeyPEM(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	block, _ := pem.Decode([]byte(s))
+	if block == nil {
+		return "", errors.New("must be a PEM private key (-----BEGIN PRIVATE KEY----- ...)")
+	}
+	if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		return s, nil
+	}
+	if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return s, nil
+	}
+	if _, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		return s, nil
+	}
+	return "", errors.New("must be an RSA or EC private key in PEM (PKCS#8, PKCS#1 or SEC1)")
 }

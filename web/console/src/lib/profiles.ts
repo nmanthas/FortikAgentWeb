@@ -52,6 +52,26 @@ export interface MCPForm {
   servers: { name: string; allTools: boolean; tools: string[] }[];
 }
 
+/**
+ * netsuite: every NetSuite transport (the REST gateway, the QuickStart and
+ * AI Connector MCP endpoints). record_types ["*"] = every type;
+ * quickstart_tools absent = every tool the mode allows; integrations absent
+ * = every NetSuite tenant (logical integration ids such as netsuite:acme).
+ */
+export interface NetSuiteForm {
+  mode: Mode;
+  allTypes: boolean;
+  recordTypes: string[];
+  suiteql: boolean;
+  allTools: boolean;
+  quickstartTools: string[];
+  allTenants: boolean;
+  tenants: string[];
+}
+
+/** A NetSuite logical integration id (same rule as the server). */
+export const netsuiteTenantPattern = /^netsuite:[a-z][a-z0-9_]{0,62}$/;
+
 export type FormFor<S extends AccessSystem> = S extends 'gmail'
   ? GmailForm
   : S extends 'drive'
@@ -66,9 +86,30 @@ export type FormFor<S extends AccessSystem> = S extends 'gmail'
             ? HTTPForm
             : S extends 'mcp'
               ? MCPForm
-              : PostgresForm;
+              : S extends 'netsuite'
+                ? NetSuiteForm
+                : S extends 'salesforce' | 'servicenow' | 'sap'
+                  ? SaaSForm
+                  : PostgresForm;
 
-export type AnyForm = GmailForm | DriveForm | GitHubForm | AWSForm | PostgresForm | A2AForm | HTTPForm | MCPForm;
+/**
+ * salesforce / servicenow / sap: one profile for both transports (REST and
+ * MCP). objects ["*"] = every object (Salesforce object, ServiceNow table,
+ * SAP <SERVICE>/<EntitySet>); integrations and mcp_tools absent = all.
+ */
+export interface SaaSForm {
+  mode: Mode;
+  allObjects: boolean;
+  objects: string[];
+  allTenants: boolean;
+  tenants: string[];
+  allTools: boolean;
+  tools: string[];
+}
+
+const isSaaS = (s: AccessSystem) => s === 'salesforce' || s === 'servicenow' || s === 'sap';
+
+export type AnyForm = GmailForm | DriveForm | GitHubForm | AWSForm | PostgresForm | A2AForm | HTTPForm | MCPForm | NetSuiteForm | SaaSForm;
 
 /** Mirrors access.MaxDelegationDepth. */
 export const MAX_DELEGATION_DEPTH = 32;
@@ -87,6 +128,19 @@ const EXTERNALS = ['none', 'allowlist', 'any'] as const;
 /** Converts profile JSON (or null for "no profile") to a form model. Unknown values fall back to "none". */
 export function toForm(system: AccessSystem, profile: unknown): AnyForm {
   const p = isObj(profile) ? profile : {};
+  if (isSaaS(system)) {
+    const all = (v: unknown) => !Array.isArray(v) || strList(v).includes('*');
+    const objs = Array.isArray(p.objects) ? strList(p.objects) : [];
+    return {
+      mode: oneOf(p.mode, MODES, 'none'),
+      allObjects: objs.includes('*'),
+      objects: objs.includes('*') ? [] : objs,
+      allTenants: all(p.integrations),
+      tenants: all(p.integrations) ? [] : strList(p.integrations),
+      allTools: all(p.mcp_tools),
+      tools: all(p.mcp_tools) ? [] : strList(p.mcp_tools),
+    };
+  }
   switch (system) {
     case 'gmail':
       return {
@@ -140,11 +194,33 @@ export function toForm(system: AccessSystem, profile: unknown): AnyForm {
           .sort((a, b) => a.name.localeCompare(b.name)),
       };
     }
+    case 'netsuite': {
+      const types = strList(p.record_types);
+      const tools = Array.isArray(p.quickstart_tools) ? strList(p.quickstart_tools) : null;
+      const tenants = Array.isArray(p.integrations) ? strList(p.integrations) : null;
+      return {
+        mode: oneOf(p.mode, MODES, 'none'),
+        allTypes: types.length === 1 && types[0] === '*',
+        recordTypes: types.length === 1 && types[0] === '*' ? [] : types,
+        suiteql: p.suiteql === true,
+        allTools: tools === null || (tools.length === 1 && tools[0] === '*'),
+        quickstartTools: tools === null || (tools.length === 1 && tools[0] === '*') ? [] : tools,
+        allTenants: tenants === null || tenants.includes('*'),
+        tenants: tenants === null || tenants.includes('*') ? [] : tenants,
+      };
+    }
   }
 }
 
 /** Converts a form model to the profile JSON the API expects. */
 export function fromForm(system: AccessSystem, form: AnyForm): Obj {
+  if (isSaaS(system)) {
+    const f = form as SaaSForm;
+    const out: Obj = { mode: f.mode, objects: f.allObjects ? ['*'] : cleanList(f.objects.map((o) => o.toLowerCase())) };
+    if (!f.allTenants) out.integrations = cleanList(f.tenants.map((t) => t.toLowerCase()));
+    if (!f.allTools) out.mcp_tools = cleanList(f.tools);
+    return out;
+  }
   switch (system) {
     case 'gmail': {
       const f = form as GmailForm;
@@ -193,6 +269,13 @@ export function fromForm(system: AccessSystem, form: AnyForm): Obj {
       }
       return { servers };
     }
+    case 'netsuite': {
+      const f = form as NetSuiteForm;
+      const out: Obj = { mode: f.mode, record_types: f.allTypes ? ['*'] : cleanList(f.recordTypes.map((t) => t.toLowerCase())), suiteql: f.suiteql };
+      if (!f.allTools) out.quickstart_tools = cleanList(f.quickstartTools);
+      if (!f.allTenants) out.integrations = cleanList(f.tenants.map((t) => t.toLowerCase()));
+      return out;
+    }
   }
 }
 
@@ -211,10 +294,20 @@ const agentIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$/;
 const domainPattern = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const mcpServerPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const mcpToolPattern = /^[A-Za-z0-9_][A-Za-z0-9_./-]{0,127}$/;
+const netsuiteTypePattern = /^[a-z][a-z0-9_]{0,99}$/;
+const quickstartToolPattern = /^[a-z][a-z0-9_]{0,63}$/;
 
 /** Returns human-readable problems with a form (empty when it looks valid). */
 export function validateForm(system: AccessSystem, form: AnyForm): string[] {
   const errs: string[] = [];
+  if (isSaaS(system)) {
+    const f = form as SaaSForm;
+    if (!f.allObjects) for (const o of cleanList(f.objects)) if (!/^[A-Za-z0-9_][A-Za-z0-9_./$-]{0,159}$/.test(o)) errs.push(`Object "${o}" is not a valid name.`);
+    const tenant = new RegExp(`^${system}:[a-z][a-z0-9_]{0,62}$`);
+    if (!f.allTenants) for (const t of cleanList(f.tenants.map((x) => x.toLowerCase()))) if (!tenant.test(t)) errs.push(`Tenant "${t}" must be an integration id such as ${system}:default.`);
+    if (!f.allTools) for (const t of cleanList(f.tools)) if (!/^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/.test(t)) errs.push(`MCP tool "${t}" is not a valid tool name.`);
+    return errs;
+  }
   switch (system) {
     case 'gmail': {
       const f = form as GmailForm;
@@ -287,6 +380,18 @@ export function validateForm(system: AccessSystem, form: AnyForm): string[] {
       }
       break;
     }
+    case 'netsuite': {
+      const f = form as NetSuiteForm;
+      if (!f.allTypes)
+        for (const t of cleanList(f.recordTypes.map((x) => x.toLowerCase())))
+          if (!netsuiteTypePattern.test(t)) errs.push(`Record type "${t}" must be a NetSuite record type name such as customer or vendorbill.`);
+      if (!f.allTools)
+        for (const t of cleanList(f.quickstartTools)) if (!quickstartToolPattern.test(t)) errs.push(`QuickStart tool "${t}" must be a tool name such as read_record.`);
+      if (!f.allTenants)
+        for (const t of cleanList(f.tenants.map((x) => x.toLowerCase())))
+          if (!netsuiteTenantPattern.test(t)) errs.push(`NetSuite integration "${t}" must be an integration id such as netsuite:acme.`);
+      break;
+    }
     default:
       break;
   }
@@ -297,6 +402,13 @@ export function validateForm(system: AccessSystem, form: AnyForm): string[] {
 export function summarize(system: AccessSystem, profile: unknown): string {
   if (profile === null || profile === undefined) return 'No profile — all access denied (POL-020)';
   const f = toForm(system, profile);
+  if (isSaaS(system)) {
+    const sf = f as SaaSForm;
+    const objs = sf.allObjects ? 'every object' : sf.objects.length ? `objects: ${sf.objects.join(', ')}` : 'no objects';
+    const tenants = sf.allTenants ? 'every tenant' : `tenants: ${sf.tenants.join(', ') || 'none'}`;
+    const tools = sf.allTools ? 'every MCP tool the mode allows' : `MCP tools: ${sf.tools.join(', ') || 'none'}`;
+    return `mode: ${sf.mode}, ${objs}, ${tenants}, ${tools}`;
+  }
   switch (system) {
     case 'gmail': {
       const g = f as GmailForm;
@@ -338,6 +450,13 @@ export function summarize(system: AccessSystem, profile: unknown): string {
       const m = f as MCPForm;
       return m.servers.length ? m.servers.map((sv) => `${sv.name}: ${sv.allTools ? 'all tools' : sv.tools.join(', ') || 'no tools'}`).join('; ') : 'no MCP servers';
     }
+    case 'netsuite': {
+      const n = f as NetSuiteForm;
+      const types = n.allTypes ? 'all record types' : n.recordTypes.length ? n.recordTypes.join(', ') : 'no record types';
+      const tools = n.allTools ? 'all QuickStart tools the mode allows' : `QuickStart tools: ${n.quickstartTools.join(', ') || 'none'}`;
+      const tenants = n.allTenants ? 'every NetSuite tenant' : `tenants: ${n.tenants.join(', ') || 'none'}`;
+      return `mode: ${n.mode}, ${types}, SuiteQL: ${n.suiteql ? 'yes' : 'no'}, ${tools}, ${tenants}`;
+    }
   }
 }
 
@@ -350,4 +469,8 @@ export const SYSTEM_LABELS: Record<AccessSystem, string> = {
   a2a: 'Agent-to-agent',
   http: 'Web (HTTP)',
   mcp: 'MCP tools',
+  netsuite: 'NetSuite',
+  salesforce: 'Salesforce',
+  servicenow: 'ServiceNow',
+  sap: 'SAP',
 };

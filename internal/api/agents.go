@@ -37,7 +37,8 @@ const maxReason = 1000
 // agentViewSQL selects one JSON object per agent with the console fields:
 // registry data, level, owner, suspension, memory access, today's/24h
 // activity and pending holds.
-// $1 = start of the current UTC day, $2 = now - 24h.
+// $1 = start of the current UTC day, $2 = now - 24h, $3 = the deployment's
+// enforcement mode.
 const agentViewSQL = `
 	SELECT jsonb_build_object('agent_id', g.agent_id, 'name', g.name, 'type', g.type, 'platform', g.platform,
 		'sponsor', g.sponsor, 'owner', g.sponsor, 'business_unit', g.business_unit, 'workspace_user', g.workspace_user,
@@ -51,7 +52,9 @@ const agentViewSQL = `
 		'held_pending', COALESCE(hp.n, 0),
 		'suspended', g.suspended_at IS NOT NULL, 'suspended_at', g.suspended_at,
 		'suspended_by', g.suspended_by, 'suspended_reason', g.suspended_reason,
-		'memory_access', COALESCE(ma.mode, 'full'), 'memory_access_changed_by', ma.changed_by)
+		'memory_access', COALESCE(ma.mode, 'full'), 'memory_access_changed_by', ma.changed_by,
+		'enforcement', g.enforcement,
+		'effective_enforcement', CASE WHEN g.enforcement = 'default' THEN $3 ELSE g.enforcement END)
 	FROM agents g
 	LEFT JOIN memory_access ma ON ma.agent_id = g.agent_id
 	LEFT JOIN LATERAL (SELECT count(*) AS n FROM actions a WHERE a.agent_id = g.agent_id AND a.ts >= $1) t ON true
@@ -69,7 +72,7 @@ func dayStart(now time.Time) time.Time {
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
-	rows, err := s.Pool.Query(r.Context(), agentViewSQL+` ORDER BY g.agent_id`, dayStart(now), now.Add(-24*time.Hour))
+	rows, err := s.Pool.Query(r.Context(), agentViewSQL+` ORDER BY g.agent_id`, dayStart(now), now.Add(-24*time.Hour), s.mode())
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -104,7 +107,7 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := time.Now()
 	var agent json.RawMessage
-	err := s.Pool.QueryRow(ctx, agentViewSQL+` WHERE g.agent_id = $3`, dayStart(now), now.Add(-24*time.Hour), id).Scan(&agent)
+	err := s.Pool.QueryRow(ctx, agentViewSQL+` WHERE g.agent_id = $4`, dayStart(now), now.Add(-24*time.Hour), s.mode(), id).Scan(&agent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "agent not found")
 		return
@@ -424,7 +427,7 @@ func (s *Server) patchAgent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeAgent(w http.ResponseWriter, r *http.Request, id string, code int) {
 	now := time.Now()
 	var agent json.RawMessage
-	if err := s.Pool.QueryRow(r.Context(), agentViewSQL+` WHERE g.agent_id = $3`, dayStart(now), now.Add(-24*time.Hour), id).Scan(&agent); err != nil {
+	if err := s.Pool.QueryRow(r.Context(), agentViewSQL+` WHERE g.agent_id = $4`, dayStart(now), now.Add(-24*time.Hour), s.mode(), id).Scan(&agent); err != nil {
 		s.internal(w, err)
 		return
 	}

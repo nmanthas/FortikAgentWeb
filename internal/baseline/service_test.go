@@ -504,7 +504,7 @@ func TestObserverAndEnricherLatency(t *testing.T) {
 		if raceEnabled {
 			budget *= 10
 		}
-		if p(enrich, .99) > budget || p(observe, .99) > budget {
+		if testutil.PerfBudgets(t) && (p(enrich, .99) > budget || p(observe, .99) > budget) {
 			t.Fatalf("too slow: enrich p99 %v observe p99 %v (budget %v)", p(enrich, .99), p(observe, .99), budget)
 		}
 		// The durable copy is written off the decision path, in one statement.

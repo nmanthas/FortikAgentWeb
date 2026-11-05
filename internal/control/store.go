@@ -36,9 +36,9 @@ func Get(ctx context.Context, q Querier, agentID string) (State, error) {
 	st := State{AgentID: agentID}
 	var lvl int16
 	var suspendedReason *string
-	err := q.QueryRow(ctx, `SELECT level, sponsor, type, business_unit, discovered, suspended_at IS NOT NULL, suspended_reason
+	err := q.QueryRow(ctx, `SELECT level, sponsor, type, business_unit, discovered, suspended_at IS NOT NULL, suspended_reason, enforcement
 		FROM agents WHERE agent_id = $1`, agentID).
-		Scan(&lvl, &st.Sponsor, &st.Type, &st.Team, &st.Discovered, &st.Suspended, &suspendedReason)
+		Scan(&lvl, &st.Sponsor, &st.Type, &st.Team, &st.Discovered, &st.Suspended, &suspendedReason, &st.Enforcement)
 	if suspendedReason != nil {
 		st.SuspendedReason = *suspendedReason
 	}

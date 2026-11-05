@@ -58,6 +58,26 @@ type Input struct {
 	// input.context.<key>: delegation (chain), population (copies, spawn
 	// rate), overrides (timed suspensions), grant (approved hold), rate.
 	Context map[string]any `json:"context,omitempty"`
+	// Enforcement is "observe" when the agent (or the whole deployment) is in
+	// observe mode (Phase 6): the policy's opinion is recorded under
+	// Result.Observed and not enforced. Empty or "enforce": enforced.
+	Enforcement string `json:"enforcement,omitempty"`
+}
+
+// Enforcement modes.
+const (
+	EnforceMode = "enforce"
+	ObserveMode = "observe"
+)
+
+// Observed is what an observe-mode decision would have been if enforced.
+type Observed struct {
+	Decision          Decision       `json:"decision"`
+	RuleID            string         `json:"rule_id"`
+	Reason            string         `json:"reason"`
+	ReducedForm       map[string]any `json:"reduced_form,omitempty"`
+	LadderChange      *LadderChange  `json:"ladder_change,omitempty"`
+	ApprovalsRequired int            `json:"approvals_required,omitempty"`
 }
 
 // Match is one rule that fired.
@@ -91,4 +111,7 @@ type Result struct {
 	// approver (e.g. calls held by the swarm breaker need two).
 	ApprovalsRequired int    `json:"approvals_required,omitempty"`
 	PolicyVersion     string `json:"policy_version,omitempty"`
+	// Observed is set in observe mode when the enforced decision would have
+	// differed: Decision is then allow and this holds what was not enforced.
+	Observed *Observed `json:"observed,omitempty"`
 }

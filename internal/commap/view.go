@@ -43,6 +43,35 @@ type Service struct {
 	Now    func() time.Time
 }
 
+// MapEvent is one map_events row (a rollup batch of edge rows).
+type MapEvent struct {
+	ID      int64
+	Type    string
+	Payload []byte
+}
+
+// MapEventsHead is the newest map_events id (0 when empty).
+func (s *Service) MapEventsHead(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(max(id), 0) FROM map_events`).Scan(&id)
+	return id, err
+}
+
+// MapEventsAfter returns up to limit map_events newer than after, oldest first.
+func (s *Service) MapEventsAfter(ctx context.Context, after int64, limit int) ([]MapEvent, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, event_type, payload::text FROM map_events WHERE id > $1 ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (MapEvent, error) {
+		var e MapEvent
+		var p string
+		err := r.Scan(&e.ID, &e.Type, &p)
+		e.Payload = []byte(p)
+		return e, err
+	})
+}
+
 // NewService returns the map query service.
 func NewService(pool *pgxpool.Pool, cfg config.MapConfig, limits Limits) (*Service, error) {
 	if pool == nil {

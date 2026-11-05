@@ -24,7 +24,7 @@ export function ActionDetailPage() {
             <div className="sub">{fmtTime(a.ts)}</div>
           </div>
           <ClassChip cls={a.class} label={a.class} />
-          <DecisionChip decision={a.decision} />
+          <DecisionChip decision={a.decision} observed={a.observed} />
         </div>
         <div className="card-pad">
           <dl className="kv">
@@ -40,6 +40,15 @@ export function ActionDetailPage() {
             <dd>{a.reason || '—'}</dd>
             <dt>Source</dt>
             <dd>{a.source || '—'}</dd>
+            {a.observed && (
+              <>
+                <dt>Observe mode</dt>
+                <dd data-testid="observed-detail">
+                  Not enforced. Fortik would have <strong>{a.observed.decision.replace('_', ' ')}</strong> this by {a.observed.ruleId}
+                  {a.observed.ladderTo ? ` and stepped the agent down to ${a.observed.ladderTo}` : ''}: {a.observed.reason}
+                </dd>
+              </>
+            )}
           </dl>
         </div>
       </section>

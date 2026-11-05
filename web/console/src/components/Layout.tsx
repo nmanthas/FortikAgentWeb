@@ -6,6 +6,7 @@ import { NavLink } from 'react-router-dom';
 import type { Me } from '../api/types';
 import { useAlertCount } from '../lib/alertCount';
 import { useLive } from '../lib/live';
+import { ObserveBanner } from './ObserveBanner';
 import {
   FortikShield,
   IconActivity,
@@ -52,6 +53,7 @@ const NAV: NavDef[] = [
   { label: 'Incidents', icon: <IconAlert />, soon: 'Soon' },
   { label: 'Memory', icon: <IconBrain />, soon: 'Soon' },
   { label: 'Integrations', icon: <IconPlug />, to: '/integrations' },
+  { label: 'Connectors', icon: <IconPlug />, to: '/connectors' },
   { label: 'Reports', icon: <IconChart />, soon: 'Soon' },
   { label: 'Settings', icon: <IconSettings />, to: '/settings' },
 ];
@@ -106,10 +108,11 @@ export function Layout({
             ),
           )}
         </nav>
-        <div className="sidebar-foot">Fortik · Phase 5</div>
+        <div className="sidebar-foot">Fortik · Phase 6</div>
       </aside>
       <div className="main">
         {me.authMethod === 'dev' && <div className="dev-banner">DEV LOGIN — not for production use</div>}
+        <ObserveBanner />
         <header className="header">
           <div className="header-title">
             <h1>{title}</h1>

@@ -30,6 +30,9 @@ secrets:
 fail:
   # READs allowed when Fortik cannot decide. Empty = everything fails closed.
   green_read_allowlist: []
+  # Fail-path decisions made while Fortik's own database is down are kept here
+  # and appended to the Diary when it is back (Phase 6).
+  spool_dir: ./.dev/spool
 
 pgproxy:
   enabled: true
@@ -108,6 +111,10 @@ agentgw:
   enabled: true
   listen: 127.0.0.1:9091    # gRPC callout for agentgateway (MCP / A2A / HTTP egress)
   internal_hosts: [acme.com, "*.acme.internal", localhost, 127.0.0.1]
+  # Route names of the agentgateway config scripts/demo-agentgateway.sh
+  # generates (`fortik agentgw config`): A2A route -> target agent.
+  a2a_targets:
+    web-agent-c: web_agent_c
 
 hook:
   proxy_hosts: ["127.0.0.1:6432", "localhost:6432"]   # psql to these goes through Fortik's proxy
@@ -147,3 +154,21 @@ baseline:
   median_factor: 5
   min_history_days: 3
   min_count: 20
+
+# --- Phase 6 ----------------------------------------------------------------
+enforcement:
+  mode: enforce             # observe: record what Fortik would enforce, without enforcing (per agent: console)
+
+connectors:
+  # SaaS copilot connector broker. In local development the Google upstream is
+  # a LOCAL FAKE (scripts/fakes/fake_google_oauth.py, started by
+  # scripts/demo-phase6.sh on :18100); real accounts: docs/DEPLOYMENT.md §5.
+  enabled: true
+  public_url: http://127.0.0.1:8090
+  audit_poll: -1s           # no vendor audit pulls against the fake
+  google:
+    client_id: fortik-dev-upstream.apps.googleusercontent.com
+    client_secret_secret: connectors/google_client_secret
+    auth_url: http://127.0.0.1:18100/auth
+    token_url: http://127.0.0.1:18100/token
+    revoke_url: http://127.0.0.1:18100/revoke

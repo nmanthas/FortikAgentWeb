@@ -834,17 +834,28 @@ func (w *Worker) raiseOverflow(ctx context.Context, tx pgx.Tx, rest []pendingSig
 
 // event writes the updated edge rows (each the full row after the upsert)
 // to the Diary in chunks: /v1/map/live sends each row as "edge.updated".
+// event writes the updated edge rows (each the full row after the upsert) to
+// map_events in chunks: /v1/map/live sends each row as "edge.updated". Map
+// telemetry is not written to the hash-chained Diary (it would grow it
+// forever); map_events is pruned with the edges (Phase 6). Security events
+// (hidden-signal alerts, swarms, containment) stay in the Diary.
 func (w *Worker) event(ctx context.Context, tx pgx.Tx, updated []Edge, res Result) error {
-	var evs []diary.Event
+	b := &pgx.Batch{}
 	for i := 0; i < len(updated); i += eventEdges {
 		chunk := updated[i:min(i+eventEdges, len(updated))]
-		evs = append(evs, diary.Event{EventType: EventEdgesUpdated, Actor: w.opts.Actor, Data: map[string]any{
+		payload, err := json.Marshal(map[string]any{
 			"edges": chunk, "part": i/eventEdges + 1, "parts": (len(updated) + eventEdges - 1) / eventEdges,
 			"actions": res.Actions, "delegations": res.Delegations, "hidden": res.Hidden,
-		}})
+		})
+		if err != nil {
+			return err
+		}
+		b.Queue(`INSERT INTO map_events (event_type, payload) VALUES ($1, $2)`, EventEdgesUpdated, payload)
 	}
-	_, err := w.diary.AppendTx(ctx, tx, evs...)
-	return err
+	if b.Len() == 0 {
+		return nil
+	}
+	return tx.SendBatch(ctx, b).Close()
 }
 
 // upsertLinks records, per window, which agent's calls through a hub app
@@ -911,6 +922,9 @@ func (w *Worker) Prune(ctx context.Context) (int64, error) {
 		}
 	}
 	if _, err := w.pool.Exec(ctx, `DELETE FROM edge_links WHERE window_start < $1`, cutoff); err != nil {
+		return total, err
+	}
+	if _, err := w.pool.Exec(ctx, `DELETE FROM map_events WHERE ts < $1`, cutoff); err != nil {
 		return total, err
 	}
 	return total, nil

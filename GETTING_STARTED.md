@@ -133,12 +133,14 @@ Each demo is a script that drives Fortik the way real agents would, then **check
 cd FortikAgentWeb
 ./scripts/demo-phase1-accident.sh     # expect 14 PASS
 ./scripts/demo-phase2.sh              # expect 30 PASS
-./scripts/demo-phase3.sh              # expect 32 PASS
+./scripts/demo-phase3.sh              # expect 35 PASS
 ./scripts/demo-phase4.sh              # expect 54 PASS
 ./scripts/demo-phase5.sh              # expect 36 PASS
+./scripts/demo-phase6.sh              # expect 22 PASS
+./scripts/demo-agentgateway.sh        # expect 11 PASS (needs the agentgateway binary, see below)
 ```
 
-These exact numbers were verified on a fresh copy of this package before it was sent.
+These numbers were verified on the development machine on 2026-10-24.
 
 ### Phase 1: Foundations (the "accident" path)
 **The story:** a coding agent (`claude_code_01`) makes the classic mistake. It cleans up staging, then drops a production table.
@@ -221,6 +223,38 @@ What the demo shows:
 
 > In this local setup one person plays both approvers, using the security and admin tokens. The setting `approvals.allow_token_pairs: true` in `configs/fortik.dev.yaml` allows that. A real deployment keeps it off, so two API tokens never count as two people.
 
+### Phase 6: Pilot-ready
+
+`./scripts/demo-phase6.sh` shows:
+
+- **Observe mode:**
+  - A real `DROP TABLE` through the proxy *runs* and is recorded as "would hold, would step down", while the agent stays FULL.
+  - Back in enforce mode, the same statement is held.
+  - Unknown actions are refused even in observe mode.
+- **Pilot metrics:** the plan's five success targets, computed from the database. Local dev data includes the demos' deliberate kills, so some targets read "not met" here.
+- **Replay gate:**
+  - 10,000 recorded policy inputs must keep their results.
+  - A careless policy edit is caught: 97 breaking changes.
+- **SaaS copilot connector**, with a **local fake** of Google OAuth:
+  1. consent, code exchange and refresh, each one a Fortik decision;
+  2. killing the copilot revokes its Google grant at once;
+  3. the next refresh is refused.
+- **Map telemetry** no longer grows the Diary.
+
+Separate scripts:
+
+| Script | What it does | Needs |
+|---|---|---|
+| `./scripts/demo-agentgateway.sh` | the **real agentgateway** (v1.6.0, the version the spike pinned) in front of Fortik: identity from the token, access profiles at the gateway, the agent-to-agent bypass blocked over real A2A, fail closed (11 checks) | `./scripts/get-agentgateway.sh` once (downloads agentgateway v1.6.0 and checks its checksum); server running. A server started before 2026-10-24 needs a restart to pick up `agentgw.a2a_targets` |
+| `./scripts/acceptance-real-accounts.sh` | the attack and accident scenarios against **real** Google Workspace, GitHub and AWS **test** accounts, once they are entered in the console. Sections without an account are SKIPPED, never passed. **Untested until those accounts exist** | test accounts; the `FORTIK_ACCEPT_*` variables in the script's header |
+| `./scripts/chaos-test.sh` | stops Redis, NATS, Fortik and its database mid-run; everything must fail closed and recover (16 checks). **Stop the dev server first.** | `brew install redis nats-server` |
+| `./scripts/loadtest.sh` | k6, 200 decisions/s for 2 minutes; p95 must stay under 50 ms | `brew install k6`; server running |
+| `./scripts/perf-test.sh` | the in-process latency budgets, on an idle machine. **Stop the dev server first.** | — |
+| `cd deploy/compose && ./init.sh && docker compose up -d && ./smoke-test.sh` | the pilot deployment: TLS and mutual TLS everywhere, observe mode (12 checks). `docker compose down -v` removes it | Docker Desktop |
+| `helm lint deploy/helm/fortik` | checks the Kubernetes chart | `brew install helm` |
+
+How to deploy for a pilot: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ---
 
 ## 6. Look around the web console
@@ -288,9 +322,10 @@ These need the setup from step 3, with its database running. The Fortik server d
 
 ```bash
 export FORTIK_TEST_PG_URL='postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable'
-go test ./...                      # about 1,100 tests; a few skip if optional tools (redis, nats, moto) are missing
-opa test policies/                 # 460 policy tests (needs opa)
-cd web/console && npm ci && npx vitest run && cd ../..   # 173 console tests (needs Node)
+go test ./...                      # 47 packages, 686 test functions (more with sub-tests); a few skip if optional tools (redis, nats, moto, temporal) are missing
+opa test policies/                 # 481 policy tests (needs opa)
+cd web/console && npm ci && npx vitest run && cd ../..   # 182 console tests (needs Node)
+./scripts/perf-test.sh             # latency budgets, enforced: run on an idle machine with the server stopped
 ```
 
 ---
@@ -341,8 +376,11 @@ pg_ctl -D .dev/pg stop; rm -rf .dev bin
   - Gmail, Drive, GitHub and AWS actions are fully wired, but those systems fail closed until test-account credentials are entered in the console under **Integrations**.
   - The demos use Fortik's decision API and local test doubles in their place.
   - Actual email delivery has not been tested against a real Google Workspace.
-- **Not built yet: Phase 6 (pilot hardening).** That covers the 200 actions/second load test, a 10,000-action replay suite, chaos tests and retention for the map's history.
-- **Speed:** a decision takes about 2.5 ms inside the server on a laptop (95% of decisions within 4.2 ms). The plan's target for the pilot is under 50 ms.
+- **Phase 6 (pilot-ready) is built and awaiting review:** observe mode, the copilot connector broker, the replay gate, chaos and load tests, mTLS, Docker Compose and Helm packaging.
+  - The Helm chart has not been installed on a real Kubernetes cluster yet.
+  - The connector broker has only been tested against a local fake of Google OAuth.
+  - The plan's "Done means" also needs 3 design partners running in observe mode.
+- **Speed (k6 load test, 2026-10-24):** at 200 decisions per second, Fortik's decision time was 3.4 ms at p95 and the full HTTP round trip 6.1 ms, with 0 errors. The plan's target is under 50 ms.
 
 ---
 

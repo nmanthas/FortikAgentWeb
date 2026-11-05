@@ -1,0 +1,6 @@
+apiVersion: v2
+name: fortik
+description: Fortik Agent Kill Switch — authority broker for autonomous agents (pilot chart)
+type: application
+version: 0.6.0
+appVersion: "phase6"

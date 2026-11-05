@@ -51,10 +51,19 @@ export function ClassChip({ cls, label }: { cls: ActionClass | null | undefined;
   );
 }
 
-export function DecisionChip({ decision }: { decision: string }) {
+export function DecisionChip({ decision, observed }: { decision: string; observed?: { decision: string; ruleId: string; reason: string } }) {
   const d = decision.toLowerCase();
   const color = d === 'allow' ? 'green' : d === 'allow_reduced' ? 'blue' : d === 'hold' ? 'amber' : d === 'deny' ? 'red' : 'gray';
-  return <span className={`chip ${color}`}>{d ? d.replace('_', ' ') : 'unknown'}</span>;
+  return (
+    <>
+      <span className={`chip ${color}`}>{d ? d.replace('_', ' ') : 'unknown'}</span>
+      {observed && (
+        <span className="chip purple" data-testid="observed-chip" title={`Observe mode: Fortik would have ${observed.decision.replace('_', ' ')} this (${observed.ruleId}) and did not enforce it`}>
+          observe: would {observed.decision.replace('_', ' ')}
+        </span>
+      )}
+    </>
+  );
 }
 
 const STATUS: Record<IntegrationStatus, { color: string; label: string }> = {

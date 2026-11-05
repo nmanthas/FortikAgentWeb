@@ -7,7 +7,8 @@
 #   uploads, upload_sensitive, pipes_to_shell, direct_db, db_host, dynamic,
 #   privilege, git [{operation, remote, branch}], gh [{operation, repo}],
 #   destructive [{command, kind, scope, path}], aws_actions, paths,
-#   sensitive_writes, sensitive_reads.
+#   sensitive_writes, sensitive_reads, reaches (systems the command talks
+#   to: github, aws; their timed suspensions cover it, fortik.overrides).
 #
 # The hook refuses before anything runs, so these red rules do not step the
 # agent down ("ladder": "NONE"); the refusal and the record are the control.

@@ -55,6 +55,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/integrations/{key}", h.configure)
 	mux.HandleFunc("POST /v1/integrations/{key}/test", h.test)
 	mux.HandleFunc("DELETE /v1/integrations/{key}", h.delete)
+	h.registerApps(mux)
 }
 
 // SecretState is how a secret field appears in API responses: never a value.
@@ -147,12 +148,13 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("key")
-	if err := h.store.Delete(r.Context(), key, p.Actor()); err != nil {
+	notes, err := h.store.Disconnect(r.Context(), key, p.Actor())
+	if err != nil {
 		h.fail(w, "delete integration", err)
 		return
 	}
 	h.log.Info("integration deleted", "key", key, "actor", p.Actor())
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"deleted": key})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"deleted": key, "notes": notes})
 }
 
 // TestResponse is the body of POST /v1/integrations/{key}/test.

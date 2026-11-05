@@ -58,4 +58,7 @@ type State struct {
 	// ladder, state and memory are kept and nothing has to be re-earned.
 	Suspended       bool   `json:"suspended"`
 	SuspendedReason string `json:"suspended_reason,omitempty"`
+	// Enforcement is the agent's override of the deployment's enforcement
+	// mode: "default" (follow the config), "observe" or "enforce" (Phase 6).
+	Enforcement string `json:"enforcement,omitempty"`
 }

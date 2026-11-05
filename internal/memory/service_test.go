@@ -71,6 +71,7 @@ func TestPromotionTimingAndHolds(t *testing.T) {
 	e := newEnv(t, envOpts{delay: 2 * time.Second})
 	ctx := context.Background()
 	st := e.store(t)
+	start := time.Now()
 
 	a, _ := e.mustWrite(t, supportAgent, "kb", "normal", nil)
 	flagged, _ := e.mustWrite(t, supportAgent, "kb", "suspicious", nil)
@@ -81,10 +82,13 @@ func TestPromotionTimingAndHolds(t *testing.T) {
 	if _, err := e.svc.ChangeAccess(ctx, otherAgent, memory.AccessStagingOnly, "user:sec", "watch"); err != nil {
 		t.Fatal(err)
 	}
-	// Not due yet.
+	// Not due yet: judged at the moment the writes started, so a slow,
+	// loaded machine cannot let the 2 s window elapse before this check.
+	e.svc.Now = func() time.Time { return start }
 	if res, err := e.svc.PromoteDue(ctx); err != nil || res.Promoted != 0 {
 		t.Fatalf("promoted early: %+v %v", res, err)
 	}
+	e.svc.Now = nil
 	// The worker promotes once due.
 	wctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -115,8 +119,21 @@ func TestPromotionTimingAndHolds(t *testing.T) {
 	if _, err := e.svc.ChangeAccess(ctx, otherAgent, memory.AccessFull, "user:sec", "cleared"); err != nil {
 		t.Fatal(err)
 	}
-	if res, err := e.svc.PromoteDue(ctx); err != nil || res.Promoted != 1 {
-		t.Fatalf("held item after access restored: %+v %v", res, err)
+	// The held writer's item was written a little after the first one; under
+	// load its 2 s window may still be running, so wait for it (bounded).
+	deadline = time.Now().Add(15 * time.Second)
+	for {
+		res, err := e.svc.PromoteDue(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Promoted == 1 {
+			break
+		}
+		if res.Promoted > 1 || time.Now().After(deadline) {
+			t.Fatalf("held item after access restored: %+v", res)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if n := e.count(t, `SELECT count(*) FROM diary WHERE event_type = 'memory.promoted'`); n != 2 {
 		t.Fatalf("memory.promoted events: %d", n)

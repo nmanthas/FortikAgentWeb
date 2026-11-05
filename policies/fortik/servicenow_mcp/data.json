@@ -1,0 +1,5 @@
+{
+  "mapping_version": "2026-10-28.1",
+  "tools": {},
+  "_evidence": "Tool mapping for ServiceNow MCP connections (servicenow_mcp). Empty on purpose: the tools come from ServiceNow's MCP Server Console (its tools are configured per server on each instance), and no live server was available to read their names and argument schemas. Every tool is refused (POL-002) and none is offered to agents until it is added here with its verb (READ, WRITE, DELETE, EXECUTE) and operation, after reading the server's tools/list (console > Integrations > ServiceNow > MCP Server > View tools)."
+}

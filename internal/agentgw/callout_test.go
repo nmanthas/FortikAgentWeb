@@ -546,3 +546,35 @@ func TestMCPDelegationBypassBlocked(t *testing.T) {
 		t.Fatalf("bad token: %v", e)
 	}
 }
+
+// An MCP server mapped to a business system (agentgw.mcp_server_systems)
+// carries target.reaches, so that system's timed suspensions cover it.
+func TestMCPServerReachesBusinessSystem(t *testing.T) {
+	f := newFixture(t, config.AgentGWConfig{
+		MCPServers:       map[string]string{"memory": "memory", "quickstart": "quickstart"},
+		MCPServerSystems: map[string]string{"quickstart": "netsuite"},
+	})
+	f.putProfile(t, "agent_a", "mcp", `{"servers":{"memory":["*"],"quickstart":["*"]}}`)
+	auth := mcpHdrs("authorization", bearer("agent_a"))
+	actionTarget := func(res interface{ GetHeaderMutation() *extmcp.HeaderMutation }) string {
+		t.Helper()
+		var id, target string
+		for _, h := range res.GetHeaderMutation().GetSet() {
+			if h.GetKey() == HeaderActionID {
+				id = string(h.GetValue())
+			}
+		}
+		if err := f.pool.QueryRow(context.Background(), `SELECT target::text FROM actions WHERE action_id=$1`, id).Scan(&target); err != nil {
+			t.Fatal(err)
+		}
+		return target
+	}
+	res := f.mcpCheck(t, mcpCtx("quickstart"), "tools/list", `{}`, auth)
+	if res.GetPass() == nil || !strings.Contains(actionTarget(res), `"reaches": ["netsuite"]`) {
+		t.Fatalf("quickstart route: %v", res)
+	}
+	res = f.mcpCheck(t, mcpCtx("memory"), "tools/list", `{}`, auth)
+	if res.GetPass() == nil || strings.Contains(actionTarget(res), "reaches") {
+		t.Fatalf("an unmapped server must not reach netsuite: %v", res)
+	}
+}

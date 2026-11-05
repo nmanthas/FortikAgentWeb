@@ -48,6 +48,20 @@ type PGStore struct {
 	gen   uint64
 	byKey map[string]cachedResolved
 	bySys map[string]cachedList
+
+	hookMu       sync.Mutex
+	onDelete     []func(ctx context.Context, key, actor string)
+	beforeDelete []BeforeDeleteHook
+}
+
+// OnDelete registers fn to run after an integration is deleted (its secrets
+// and row are gone), e.g. to forget state derived from it. Hooks run in
+// registration order and must not fail the delete; they log their own
+// errors.
+func (s *PGStore) OnDelete(fn func(ctx context.Context, key, actor string)) {
+	s.hookMu.Lock()
+	defer s.hookMu.Unlock()
+	s.onDelete = append(s.onDelete, fn)
 }
 
 type cachedResolved struct {
@@ -82,12 +96,12 @@ type ConfigureInput struct {
 	Secrets map[string]*string         `json:"secrets"`
 }
 
-const rowCols = `key, system, config_json, secret_fields, status, last_tested_at, COALESCE(last_error, ''), updated_by, updated_at`
+const rowCols = `key, system, COALESCE(app_integration_id, ''), COALESCE(transport, ''), config_json, secret_fields, status, last_tested_at, COALESCE(last_error, ''), updated_by, updated_at`
 
 func scanRow(row pgx.Row) (Integration, error) {
 	var in Integration
 	var cfg []byte
-	err := row.Scan(&in.Key, &in.System, &cfg, &in.SecretFields, &in.Status, &in.LastTestedAt, &in.LastError, &in.UpdatedBy, &in.UpdatedAt)
+	err := row.Scan(&in.Key, &in.System, &in.IntegrationID, &in.Transport, &cfg, &in.SecretFields, &in.Status, &in.LastTestedAt, &in.LastError, &in.UpdatedBy, &in.UpdatedAt)
 	if err != nil {
 		return Integration{}, err
 	}
@@ -246,6 +260,9 @@ func (s *PGStore) Configure(ctx context.Context, key string, in ConfigureInput, 
 	if err != nil {
 		return Integration{}, fmt.Errorf("integrations: encode config: %w", err)
 	}
+	if err := s.precheckApp(ctx, key, system, cfg); err != nil {
+		return Integration{}, err
+	}
 
 	conn, unlock, err := s.lockKey(ctx, key)
 	if err != nil {
@@ -318,21 +335,27 @@ func (s *PGStore) Configure(ctx context.Context, key string, in ConfigureInput, 
 	// 2. Row + Diary in one transaction.
 	var out Integration
 	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-		var err error
+		appID, transport, err := s.linkApp(ctx, tx, key, system, cfg, actor)
+		if err != nil {
+			return err
+		}
 		out, err = scanRow(tx.QueryRow(ctx, `
-			INSERT INTO integrations (key, system, config_json, secret_fields, status, last_tested_at, last_error, updated_by, updated_at)
-			VALUES ($1, $2, $3, $4, 'configured', NULL, NULL, $5, now())
+			INSERT INTO integrations (key, system, app_integration_id, transport, config_json, secret_fields, status, last_tested_at, last_error, updated_by, updated_at)
+			VALUES ($1, $2, $6, $7, $3, $4, 'configured', NULL, NULL, $5, now())
 			ON CONFLICT (key) DO UPDATE SET
 				config_json = EXCLUDED.config_json, secret_fields = EXCLUDED.secret_fields,
+				app_integration_id = EXCLUDED.app_integration_id, transport = EXCLUDED.transport,
 				status = 'configured', last_tested_at = NULL, last_error = NULL,
 				updated_by = EXCLUDED.updated_by, updated_at = now()
-			RETURNING `+rowCols, key, system, cfgJSON, nonNilStrings(final), actor))
+			RETURNING `+rowCols, key, system, cfgJSON, nonNilStrings(final), actor, appID, transport))
 		if err != nil {
 			return err
 		}
 		data := map[string]any{
 			"key":                 key,
 			"system":              system,
+			"integration_id":      appID,
+			"transport":           transport,
 			"created":             !exists,
 			"config":              cfg,
 			"secret_fields":       nonNilStrings(final),
@@ -400,10 +423,19 @@ func (s *PGStore) Delete(ctx context.Context, key, actor string) error {
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("%w: %s", ErrNotConfigured, key)
 		}
+		// A logical integration created implicitly with its connection goes
+		// with its last connection; one an administrator created stays.
+		if prev.IntegrationID != "" {
+			if _, err := tx.Exec(ctx, `DELETE FROM app_integrations WHERE integration_id = $1 AND NOT created_explicitly
+				AND NOT EXISTS (SELECT 1 FROM integrations WHERE app_integration_id = $1)`, prev.IntegrationID); err != nil {
+				return err
+			}
+		}
 		var pc any
 		_ = json.Unmarshal(prev.Config, &pc)
 		_, err = s.diary.AppendTx(ctx, tx, diary.Event{EventType: EventDeleted, Actor: actor, Data: map[string]any{
-			"key": key, "system": system, "config": pc, "secrets_deleted": nonNilStrings(prev.SecretFields),
+			"key": key, "system": system, "integration_id": prev.IntegrationID, "transport": prev.Transport,
+			"config": pc, "secrets_deleted": nonNilStrings(prev.SecretFields),
 			"previous_status": prev.Status,
 		}})
 		return err
@@ -411,6 +443,13 @@ func (s *PGStore) Delete(ctx context.Context, key, actor string) error {
 	if err != nil {
 		note := s.restore(applied)
 		return fmt.Errorf("integrations: delete %s: %w%s", key, err, note)
+	}
+	s.invalidate() // before the hooks, so they see the integration gone
+	s.hookMu.Lock()
+	hooks := slices.Clone(s.onDelete)
+	s.hookMu.Unlock()
+	for _, fn := range hooks {
+		fn(ctx, key, actor)
 	}
 	return nil
 }

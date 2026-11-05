@@ -1,0 +1,59 @@
+# CI: the plan's test plan ("unit tests for every Rego rule, run in CI";
+# "any class change versus the last release blocks the merge"). `make ci`
+# runs go vet, the Rego format check, the OPA tests with >= 95% coverage,
+# and the Go tests with -race against real Postgres (pgvector), which
+# include the 10,000-input replay gate (internal/replay).
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go-and-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      FORTIK_TEST_PG_URL: postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install OPA (pinned)
+        run: |
+          curl -fsSL -o opa https://openpolicyagent.org/downloads/v1.21.1/opa_linux_amd64_static
+          chmod +x opa && sudo mv opa /usr/local/bin/opa
+          opa version
+      - name: Redis and NATS for the tests that use them
+        run: sudo apt-get update && sudo apt-get install -y redis-server nats-server || true
+      - name: make ci (vet, policy fmt, policy tests >= 95% coverage, go test -race incl. the replay gate)
+        run: make ci
+
+  console:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web/console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npx vitest run

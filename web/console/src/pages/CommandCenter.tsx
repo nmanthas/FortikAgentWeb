@@ -9,6 +9,7 @@ import { fleetRelease, loadCommandCenter, loadIncident, recentDiary, type Comman
 import type { Agent, DiaryEvent } from '../api/types';
 import { useMe } from '../App';
 import { ClassChip, DecisionChip, LevelChip } from '../components/Chips';
+import { PilotMetricsCard } from '../components/PilotMetrics';
 import { EStopDialog, OpDialog } from '../components/Containment';
 import { IconAlert, IconBan, IconBot, IconBrain, IconEye, IconPause, IconShield, IconSwarm, SystemIcon } from '../components/Icons';
 import { ErrorBox, Loading } from '../components/ui';
@@ -50,6 +51,7 @@ export function CommandCenterPage() {
         <div className="cc-main">
           <AgentRadar d={d} selectedId={selected?.agentId ?? null} onSelect={setPicked} />
           <IncidentPanel incident={incident.data} loading={incident.loading} error={incident.error} onRetry={incident.reload} onSelect={setPicked} />
+          <PilotMetricsCard />
           <ArchitecturePanel />
         </div>
         <div className="cc-side">

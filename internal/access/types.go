@@ -13,7 +13,7 @@ import (
 // Systems that have access profiles: the Phase 2 apps, plus (Phase 3) a2a
 // (who an agent may delegate to), http (external egress) and mcp (servers
 // and tools). New systems are appended so existing orderings stay stable.
-var Systems = []string{"gmail", "drive", "github", "aws", "postgres", "a2a", "http", "mcp"}
+var Systems = []string{"gmail", "drive", "github", "aws", "postgres", "a2a", "http", "mcp", "netsuite", "salesforce", "servicenow", "sap"}
 
 // Profile is one version of an agent's access to one system. Profile JSON
 // shapes are defined in docs/PHASE2_DESIGN.md §5 and validated by Validate.

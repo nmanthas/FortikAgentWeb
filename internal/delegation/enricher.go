@@ -102,7 +102,11 @@ func (e *Enricher) attribute(ctx context.Context, a action.Action) (*Attribution
 		// agent must not hide a stricter inbound chain behind an older,
 		// more permissive token (its own self-delegation token included).
 		att := &Attribution{
-			PolicyContext: PolicyContext{Present: true, Source: SourceToken, DelegationID: c.DelegationID, Depth: c.Depth, Root: c.Root},
+			PolicyContext: PolicyContext{Present: true, Source: SourceToken, DelegationID: c.DelegationID, Depth: c.Depth, Root: c.Root,
+				CorrelationID: c.Corr},
+		}
+		if !c.Scope.IsZero() {
+			att.TaskScopes = append(att.TaskScopes, *c.Scope)
 		}
 		att.Lineage = slices.Clone(c.Chain[:len(c.Chain)-1])
 		att.Roots = []string{c.Root}
@@ -176,6 +180,15 @@ func (e *Enricher) merge(att *Attribution, h Hop, agent string) bool {
 		att.Roots = append(att.Roots, h.Root)
 	}
 	att.Depth = max(att.Depth, h.Depth)
+	if !h.Scope.IsZero() {
+		att.TaskScopes = append(att.TaskScopes, *h.Scope)
+	}
+	switch {
+	case att.CorrelationID == "":
+		att.CorrelationID = h.CorrelationID
+	case h.CorrelationID != "" && h.CorrelationID != att.CorrelationID:
+		att.CorrelationID = "multiple" // several delegated tasks: none is "the" origin
+	}
 	return true
 }
 

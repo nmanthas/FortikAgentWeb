@@ -202,7 +202,8 @@ func (s *Service) AfterDecide(ctx context.Context, tx pgx.Tx, out *decide.Outcom
 		// A grant releases a breaker-matching call only when it carries the
 		// breaker's two approvals (policy checks the same on the normal path;
 		// this covers a breaker tripped after this call was enriched).
-		if out.Result.Decision.Executes() && (out.Result.GrantID == "" || grantApprovals(in) < BreakerApprovals) {
+		// Observe mode records the breaker but never converts a decision.
+		if in.Enforcement != policy.ObserveMode && out.Result.Decision.Executes() && (out.Result.GrantID == "" || grantApprovals(in) < BreakerApprovals) {
 			if err := s.convert(ctx, tx, out, breakerSwarm); err != nil {
 				return fmt.Errorf("swarm: hold for breaker: %w", err)
 			}

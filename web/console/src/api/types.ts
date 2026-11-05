@@ -32,6 +32,9 @@ export interface AuthConfig {
 
 export interface Agent {
   agentId: string;
+  /** Observe mode (Phase 6): the agent's own setting and what is in force. */
+  enforcement?: 'default' | 'observe' | 'enforce';
+  effectiveEnforcement?: 'observe' | 'enforce';
   name: string;
   type: string;
   platform: string;
@@ -99,6 +102,8 @@ export interface ActionRow {
   failClosed: boolean;
   held: boolean;
   undo?: { kind: string; status: string } | null;
+  /** Observe mode (Phase 6): what would have been enforced (and was not). */
+  observed?: { decision: string; ruleId: string; reason: string; ladderTo?: string };
 }
 
 export interface HeldAction {
@@ -142,8 +147,10 @@ export interface ProfileView {
   reason?: string;
 }
 
-export type AccessSystem = 'gmail' | 'drive' | 'github' | 'aws' | 'postgres' | 'a2a' | 'http' | 'mcp';
-export const ACCESS_SYSTEMS: AccessSystem[] = ['gmail', 'drive', 'github', 'aws', 'postgres', 'a2a', 'http', 'mcp'];
+export type AccessSystem = 'gmail' | 'drive' | 'github' | 'aws' | 'postgres' | 'a2a' | 'http' | 'mcp' | 'netsuite' | 'salesforce' | 'servicenow' | 'sap';
+export const ACCESS_SYSTEMS: AccessSystem[] = ['gmail', 'drive', 'github', 'aws', 'postgres', 'a2a', 'http', 'mcp', 'netsuite', 'salesforce', 'servicenow', 'sap'];
+/** Systems whose profile is the shared SaaS shape (mode, objects, integrations, mcp_tools). */
+export const SAAS_SYSTEMS = ['salesforce', 'servicenow', 'sap'] as const;
 
 export interface SchemaField {
   key: string;
@@ -154,6 +161,8 @@ export interface SchemaField {
   help?: string;
   options?: string[];
   default?: unknown;
+  /** The field applies only when another field has one of these values (e.g. a secret of one auth type). */
+  showWhen?: Record<string, string[]>;
 }
 
 export interface IntegrationSchema {
@@ -209,8 +218,8 @@ export interface NewAgent {
 // --- Phase 3 (docs/PHASE3_DESIGN.md) ----------------------------------------------
 
 /** Systems an app suspension may target (§5). */
-export type OverrideSystem = 'gmail' | 'drive' | 'github' | 'aws' | 'postgres';
-export const OVERRIDE_SYSTEMS: OverrideSystem[] = ['gmail', 'drive', 'github', 'aws', 'postgres'];
+export type OverrideSystem = 'gmail' | 'drive' | 'github' | 'aws' | 'postgres' | 'netsuite' | 'salesforce' | 'servicenow' | 'sap';
+export const OVERRIDE_SYSTEMS: OverrideSystem[] = ['gmail', 'drive', 'github', 'aws', 'postgres', 'netsuite', 'salesforce', 'servicenow', 'sap'];
 export type OverrideMode = 'suspended' | 'read_only';
 
 /** internal/overrides.Override. */

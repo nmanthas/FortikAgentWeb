@@ -1,0 +1,11 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "fortik.fullname" . }}
+  labels: {{- include "fortik.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- include "fortik.selector" . | nindent 6 }}
+{{- end }}

@@ -45,7 +45,24 @@ figure is listed under **Deviations**, with the reason.
    - **Two-person rule and API tokens:** two API tokens no longer count as two people. A second token vote on a two-approver hold or a swarm release is refused unless `approvals.allow_token_pairs` is on. That setting is on only in the dev config, so the demo can play both approvers with the security and admin tokens.
    - **Breaker identity:** a Gmail SEND is "the same call" when it goes to the same recipients (sorted, lower-cased, without +tags, in any of To, Cc or Bcc, whether sent directly or from a draft). Postgres row writes (INSERT, UPDATE, DELETE, MERGE, COPY FROM) do not count toward the Max-5 breaker, because the proxy identifies them by statement shape without their values.
 
-## Phase 1 · Foundations (this phase)
+9. **Phase 6 deviations** ([PHASE6_DESIGN.md](PHASE6_DESIGN.md)):
+   - **Connector token verbs:** a token issued to a copilot connector is a decision on system `connector` with verb **READ** (every scope read-only) or **WRITE**, not GRANT. GRANT is always red, which would refuse every connector. A READ_ONLY agent's copilot still gets read-only tokens.
+   - **Observe mode keeps some refusals:** it relaxes only policy *opinions*. Unknown or malformed actions, fail-closed outcomes, levels set by people, timed suspensions, unregistered agents, frozen swarms, copy caps, memory cuts and connector checks stay enforced (the `always_enforced` list in docs/POLICIES.md).
+   - **The replay corpus** is built from **captured real policy inputs** of the test suites and demos (`FORTIK_POLICY_CAPTURE`, then `fortik replay build`), not from a synthetic generator. Decision, rule and step-down changes fail the gate too, not only class changes.
+   - **Map telemetry** moved out of the hash-chained Diary into `map_events`, which is pruned with the map (Phase 5 known limitation).
+   - **Latency gate:** the plan's gate is the k6 load test (200 actions/s, p95 < 50 ms). The in-process latency unit tests enforce their budgets only with `FORTIK_PERF=1` (`scripts/perf-test.sh`, on an idle machine). Under `go test ./...` they measure CPU contention between ~45 packages, so there they only log their numbers.
+   - **Not verified here:** the Helm chart is linted and rendered, not installed on a live cluster. The Google connector is tested against a local fake of Google OAuth; GitHub connectors and vendor audit-log pulls are tested only with fakes. Real accounts are needed.
+   - **Fixes to earlier phases made in Phase 6:**
+     - A GitHub (or AWS) timed suspension now also covers `gh`, git remote operations (and the AWS CLI) run through the Claude Code hook (`target.reaches`). Before, shell commands were system `shell` and escaped the suspension.
+     - The Instances tab shows copies refused at registration ("N refused, no credentials"), the plan's "9 of 6" case for SC-6.
+   - **Completed on 2026-10-24:**
+     - `scripts/demo-agentgateway.sh` puts the real agentgateway v1.6.0 in front of the dev server (A2A delegation, HTTP egress, the UC1 bypass, fail closed). `TestEndToEndAgentgateway` already covered it in the test suite.
+     - The real-account acceptance script `scripts/acceptance-real-accounts.sh`, untested until test accounts exist.
+     - Owner notifications on Slack: the `notify_slack` integration (the plan's "console, plus Slack or email"; email is not built).
+     - A CI workflow `.github/workflows/ci.yml` running `make ci`.
+   - **"Done means" is not met yet:** the attack and accident scenarios against real Google Workspace, GitHub and AWS test accounts, and 3 design partners in observe mode, need the developer (accounts, partners).
+
+## Phase 1 · Foundations (done)
 
 - **Goal:** the smallest secure core that every later phase plugs into, plus a demoable accident-*containment* path through a real interception point.
 - **Scope:**
@@ -79,7 +96,7 @@ figure is listed under **Deviations**, with the reason.
 - **Manual validation:** `scripts/demo-phase1-accident.sh`.
 - **Exit criteria:** all of the above green. DROP TABLE on prod through the proxy is held, never executes, offers the rename form and steps the agent to READ_ONLY. A non-narrow staging DELETE is snapshotted, runs, and can be undone. The Diary verifies. The spike report gives a recommendation.
 
-## Phase 2 · Broker and apps
+## Phase 2 · Broker and apps (done; checks against real Workspace, GitHub and AWS sandboxes wait for test accounts)
 
 - **Goal:** Fortik owns the credential path. An agent cannot act on Workspace, GitHub, AWS or Postgres without a Fortik-issued, short-lived, narrow credential.
 - **Scope:**
@@ -98,7 +115,7 @@ figure is listed under **Deviations**, with the reason.
 - **Tests:** adapter contract tests against the real sandboxes, broker scope-generation unit tests, revocation tests, and authz tests per role.
 - **Exit criteria:** credentials are issued and revoked on all four systems against the sandboxes. A level change affects the next credential in under 1 s. The Agents screen shows real agents, levels and recent actions.
 
-## Phase 3 · Coding agents (gate: accident demo end to end)
+## Phase 3 · Coding agents (gate: accident demo end to end) (done)
 
 - **Goal:** the full accident scenario with Claude Code.
 - **Scope:**
@@ -127,7 +144,7 @@ figure is listed under **Deviations**, with the reason.
   - DROP on prod is held, the safe form is offered, the agent goes to Read-only, and the owner approves or denies in the console.
   - The staging delete is undone from the Undo list.
 
-## Phase 4 · Containment (implemented, awaiting developer review)
+## Phase 4 · Containment (done)
 
 - **Scope:**
   - **The remaining four undo kinds:** Drive permission delete, Gmail 2-minute delayed send with cancel, GitHub ref restore and PR reopen, and memory staging namespace with 10-minute promotion and snapshot restore. Plus the Undo list in the console.
@@ -138,7 +155,7 @@ figure is listed under **Deviations**, with the reason.
   - **Console:** the **Command Center**, live.
 - **Tests:** memory-cut (scenario 5), runaway-copies (scenario 6) and kill tests, plus per-kind undo contract tests.
 
-## Phase 5 · Swarms and map (gate: attack + kill-swarm demos) (implemented, awaiting developer review)
+## Phase 5 · Swarms and map (gate: attack + kill-swarm demos) (done)
 
 - **Scope:**
   - **A2A and delegation:** the delegation chain, and DELEGATE actions through agentgateway.
@@ -154,7 +171,7 @@ figure is listed under **Deviations**, with the reason.
   - **Approval queue:** the full queue.
 - **Tests:** attack (scenario 1), kill-swarm (scenario 3) and shadow agent (scenario 7).
 
-## Phase 6 · Pilot-ready (gate: 3 partners in observe mode)
+## Phase 6 · Pilot-ready (gate: 3 partners in observe mode) (implemented, awaiting developer review)
 
 - **Scope:**
   - **SaaS copilot connector broker:** Fortik-issued OAuth clients and vendor audit-log pulls.

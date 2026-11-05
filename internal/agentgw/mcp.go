@@ -47,6 +47,9 @@ func (m *mcpService) CheckRequest(ctx context.Context, req *extmcp.McpRequest) (
 		return mcpDenied(*bad), nil
 	}
 	mp := mapMCP(s.verbs, server, route, req.GetMethod(), req.GetMcpRequest())
+	if sys := s.cfg.MCPServerSystems[server]; sys != "" && mp.Target != nil {
+		mp.Target["reaches"] = []string{sys} // e.g. a NetSuite suspension covers a QuickStart route
+	}
 	v := s.decide(ctx, p, mp, hdr[headerDelegation])
 	if !v.Allow {
 		return mcpDenied(v), nil

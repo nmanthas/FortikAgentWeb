@@ -259,8 +259,11 @@ export async function testIntegration(key: string): Promise<TestResult> {
   return normTestResult(await api.post(`/v1/integrations/${seg(key)}/test`, {}));
 }
 
-export async function deleteIntegration(key: string): Promise<void> {
-  await api.del(`/v1/integrations/${seg(key)}`);
+/** Returns the server's notes on what disconnecting did upstream (e.g. whether an OAuth grant was revoked). */
+export async function deleteIntegration(key: string): Promise<string[]> {
+  const r = await api.del<unknown>(`/v1/integrations/${seg(key)}`);
+  const notes = typeof r === 'object' && r !== null && Array.isArray((r as { notes?: unknown }).notes) ? (r as { notes: unknown[] }).notes : [];
+  return notes.filter((n): n is string => typeof n === 'string');
 }
 
 // --- Phase 3: approvals (docs/PHASE3_DESIGN.md §6) -------------------------------------

@@ -15,12 +15,18 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"fortik/internal/connector"
+	"fortik/internal/tlsx"
+	"fortik/migrations"
+	"github.com/jackc/pgx/v5"
+	"google.golang.org/grpc/credentials"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,6 +55,7 @@ import (
 	"fortik/internal/console"
 	"fortik/internal/containment"
 	"fortik/internal/control"
+	"fortik/internal/coverage"
 	"fortik/internal/decide"
 	"fortik/internal/delegation"
 	"fortik/internal/diary"
@@ -61,12 +68,16 @@ import (
 	"fortik/internal/integrations"
 	"fortik/internal/memory"
 	"fortik/internal/metrics"
+	"fortik/internal/netsuite"
+	"fortik/internal/notify"
+	"fortik/internal/nsquickstart"
 	"fortik/internal/overrides"
 	"fortik/internal/pgproxy"
 	"fortik/internal/policy"
 	"fortik/internal/population"
 	"fortik/internal/queues"
 	"fortik/internal/retention"
+	"fortik/internal/saasrest"
 	"fortik/internal/secrets"
 	"fortik/internal/shadow"
 	"fortik/internal/shadow/discoverers"
@@ -113,6 +124,14 @@ func main() {
 		} else {
 			err = agentgw.RunConfigCommand(os.Args[3:], os.Stdout, os.Stderr)
 		}
+	case "replay":
+		err = cmdReplay(ctx, os.Args[2:])
+	case "certs":
+		err = cmdCerts(os.Args[2:])
+	case "healthz":
+		err = cmdHealthz(os.Args[2:])
+	case "config":
+		err = cmdConfig(os.Args[2:])
 	case "keygen":
 		seed := make([]byte, ed25519.SeedSize)
 		if _, err = rand.Read(seed); err == nil {
@@ -135,6 +154,8 @@ func usage() {
   agent   register  -config f -id ID [-name N -type T -platform P -sponsor S -team B -copy-cap N]
   agent   set-level -config f -id ID -level LEVEL -reason TEXT [-actor NAME]
   agent   list      -config f
+  replay  run | update | build -capture F   (policy regression gate)
+  certs   dev -out DIR [-hosts ...] [-clients ...]   (development mTLS PKI)
   diary   verify    -config f
   diary   export    -config f [-agent ID] [-from RFC3339] [-to RFC3339] [-out FILE]
   diary   seal      -config f -day YYYY-MM-DD
@@ -220,6 +241,12 @@ func cmdServe(ctx context.Context, args []string) error {
 	if !cfg.API.Enabled && !cfg.PGProxy.Enabled && !cfg.Gateway.Enabled {
 		return errors.New("nothing to serve: enable api, pgproxy and/or gateway in the config")
 	}
+	if err := captureAllowed(cfg); err != nil {
+		return err
+	}
+	if os.Getenv(policy.CaptureEnv) != "" {
+		log.Warn("policy input capture is ON (development only): every decision's input is written to disk", "env", policy.CaptureEnv)
+	}
 	if dp.signer == nil {
 		log.Warn("no diary signing key configured: /v1/diary/export and seal are unavailable", "secret", cfg.Diary.SigningKeySecret)
 	}
@@ -253,11 +280,26 @@ func cmdServe(ctx context.Context, args []string) error {
 		go eng.Watch(ctx, cfg.Policy.PollEvery)
 	}
 	log.Info("policy bundle loaded", "version", eng.Version(), "dir", cfg.Policy.Dir)
+	if policy.Capturing() {
+		log.Warn("policy input capture is on (" + policy.CaptureEnv + "): every decision input is written to a local file; development only")
+	}
 
 	// --- core: access profiles, decide, undo, integrations -------------------
 	accStore := access.NewPGStore(dp.pool, dp.diary)
 	svc := &decide.Service{Pool: dp.pool, Policy: eng, Control: dp.ctl, Diary: dp.diary, Fail: cfg.Fail, Log: log,
-		Access: accStore, YellowHoldsThreshold: cfg.Ladder.YellowHoldsThreshold, YellowWindow: cfg.Ladder.YellowWindow}
+		Access: accStore, YellowHoldsThreshold: cfg.Ladder.YellowHoldsThreshold, YellowWindow: cfg.Ladder.YellowWindow,
+		Enforcement: cfg.Enforcement.Mode}
+	if svc.Spool, err = decide.NewSpool(cfg.Fail.SpoolDir); err != nil {
+		return err
+	}
+	go svc.SpoolWorker(ctx, 10*time.Second)
+	if err := recordDeploymentMode(ctx, dp, cfg.Enforcement.Mode); err != nil {
+		return err
+	}
+	if cfg.Enforcement.Mode == "observe" {
+		log.Warn("enforcement.mode is observe: Fortik records what it would enforce but does not enforce policy decisions " +
+			"(unknown actions, fail-closed outcomes and levels set by people are still enforced)")
+	}
 	us := undo.NewPGStore(dp.pool, dp.diary)
 	intStore := integrations.NewPGStore(dp.pool, dp.diary, store)
 	testers := integrations.NewRegistry()
@@ -288,6 +330,11 @@ func cmdServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// --- Phase 6: SaaS copilot connector broker -----------------------------------
+	connSvc, connFetchers, err := buildConnectors(ctx, cfg, dp, svc, store, intStore, log.With("component", "connector"))
+	if err != nil {
+		return err
+	}
 	adapters := map[string]broker.Adapter{
 		"aws":      brokeraws.New(intStore, cfg.Broker.AWSSessionTTL, log.With("component", "aws")),
 		"github":   ghBrk,
@@ -299,9 +346,38 @@ func cmdServe(ctx context.Context, args []string) error {
 	for k, a := range gad.BrokerAdapters() {
 		adapters[k] = a
 	}
+	if connSvc != nil {
+		adapters[connector.System] = connSvc // kill / quarantine revoke copilot grants upstream
+	}
+	// NetSuite (Milestone 1): gateway adapter, connector and activity sync
+	// share one client (one Fortik-held token cache).
+	nsClient := netsuite.NewClient(nil)
+	nsGW, err := netsuite.NewAdapter(intStore, nsClient, us, store, cfg.Undo.SnapshotRetention, log.With("component", "netsuite"))
+	if err != nil {
+		return err
+	}
+	nsConn := netsuite.NewConnector(intStore, nsClient, log.With("component", "netsuite"))
+	adapters[netsuite.System] = nsConn // kill / suspend: says what is and is not revoked in NetSuite
+	// NetSuite QuickStart MCP server: connection check and tool discovery
+	// (QuickStart Milestone 1); agents' calls are not routed through it yet.
+	// NetSuite MCP transport: QuickStart MCP server and a full account's AI
+	// Connector Service, one connection per tenant (integration platform M1).
+	qsSvc := nsquickstart.New(dp.pool, dp.diary, intStore, cfg.MCPUpstreams, "dev", log.With("component", "netsuite_mcp"))
+	qsSvc.EnableUndo(us, store, cfg.Undo.SnapshotRetention) // update_record snapshots; also the OAuth token store
+	qsMapping, err := nsquickstart.LoadMappings(cfg.Policy.Dir)
+	if err != nil {
+		return err
+	}
 	brk := broker.New(svc, dp.pool, dp.diary, accStore, adapters, log.With("component", "broker"))
 	late.Set(brk)
-	for _, t := range []integrations.Tester{brokeraws.NewTester(), ghbroker.NewTester(ghClient), roles, google.NewTester(cfg.Gateway, nil), memory.Tester{}} {
+	notifier := notify.NewWorker(dp.pool, intStore, 5*time.Second, log.With("component", "notify"))
+	// Salesforce, ServiceNow and SAP REST connections (unified REST / MCP
+	// integrations); their MCP connections are qsSvc's.
+	saasSvc := saasrest.New(dp.pool, intStore, saasrest.Guard{AllowedHosts: cfg.SaaSUpstreams.AllowedHosts, AllowLoopback: cfg.SaaSUpstreams.AllowLoopback},
+		log.With("component", "saas_rest"))
+	allTesters := []integrations.Tester{brokeraws.NewTester(), ghbroker.NewTester(ghClient), roles, google.NewTester(cfg.Gateway, nil), memory.Tester{}, notifier, nsConn}
+	allTesters = append(append(allTesters, qsSvc.Testers()...), saasSvc.Testers()...)
+	for _, t := range allTesters {
 		if err := testers.Register(t); err != nil {
 			return err
 		}
@@ -331,6 +407,11 @@ func cmdServe(ctx context.Context, args []string) error {
 	revokers := map[string]overrides.Revoker{}
 	for k, a := range adapters {
 		revokers[k] = a
+		if connSvc != nil {
+			// A timed suspension of gmail, drive or github also ends copilot
+			// connector grants that reach that system, at once.
+			revokers[k] = withConnectorRevoke{base: a, conn: connSvc, system: k}
+		}
 	}
 	ovStore := overrides.NewPGStore(dp.pool, dp.diary, revokers, log.With("component", "overrides"))
 	ovWorker, err := overrides.NewWorker(ovStore, accStore, alertStore, cfg.Overrides.SweepInterval, log.With("component", "overrides"))
@@ -423,14 +504,23 @@ func cmdServe(ctx context.Context, args []string) error {
 	svc.Observers = []decide.Observer{swarmSvc, delegObs, approvals.NewGrantObserver(dp.diary), pop, baseSvc}
 	go delegStore.RunExpiry(ctx, 30*time.Second)
 	go ovWorker.Run(ctx)
+	go notifier.Run(ctx) // alerts to Slack once the notify_slack integration is configured
 	go apprSvc.ExpiryWorker(30 * time.Second).Run(ctx)
 	if cfg.AgentGW.Enabled {
 		verbs, err := agentgw.LoadToolVerbs(cfg.Policy.Dir)
 		if err != nil {
 			return err
 		}
+		agwOpts := []agentgw.Option{agentgw.WithDiary(dp.diary), agentgw.WithPool(dp.pool)}
+		agwTLS, err := tlsx.Server(cfg.AgentGW.TLS)
+		if err != nil {
+			return fmt.Errorf("agentgw: %w", err)
+		}
+		if agwTLS != nil {
+			agwOpts = append(agwOpts, agentgw.WithTransportCredentials(credentials.NewTLS(agwTLS)))
+		}
 		cb, err := agentgw.New(cfg.AgentGW, svc, gateway.NewAgentAuth(dp.sec, cfg.PGProxy.AgentTokensSecret, log), delegStore, verbs,
-			log.With("component", "agentgw"), agentgw.WithDiary(dp.diary), agentgw.WithPool(dp.pool))
+			log.With("component", "agentgw"), agwOpts...)
 		if err != nil {
 			return err
 		}
@@ -444,19 +534,33 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	// --- undo executors -----------------------------------------------------------
 	executors := map[string]undo.Executor{}
-	for _, ex := range []undo.Executor{pgundo.NewExecutor(cfg.PGProxy, dp.sec, pgundo.WithIntegrations(intStore)), gad.UndoExecutor(), ghGW.UndoExecutor(),
-		memory.NewUndoExecutor(memStores)} {
+	for _, ex := range []undo.Executor{pgundo.NewExecutor(cfg.PGProxy, dp.sec, pgundo.WithIntegrations(intStore)), gad.UndoExecutor(), ghGW.UndoExecutor(), nsGW.UndoExecutor(),
+		memory.NewUndoExecutor(memStores), qsSvc.UndoExecutor()} {
 		for _, k := range ex.Kinds() {
 			executors[k] = ex
 		}
 	}
 
-	serveHTTP := func(name, addr string, h http.Handler) {
-		hs := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second,
+	serveHTTP := func(name, addr string, h http.Handler, tc config.TLSConfig) error {
+		tlsCfg, err := tlsx.Server(tc)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if tlsCfg == nil && !httpx.IsLoopbackName(addr) && !tc.InsecurePlaintext {
+			return fmt.Errorf("%s: refusing to serve plaintext HTTP on non-loopback %q: configure %s.tls (cert_file, key_file, client_ca_file) or set %s.tls.insecure_plaintext behind a TLS-terminating proxy",
+				name, addr, name, name)
+		}
+		hs := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, TLSConfig: tlsCfg,
 			ReadTimeout: 60 * time.Second, WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute}
 		go func() {
-			log.Info(name+" listening", "addr", addr)
-			if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Info(name+" listening", "addr", addr, "tls", tlsCfg != nil, "client_cert_required", tlsCfg != nil && tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert)
+			var err error
+			if tlsCfg != nil {
+				err = hs.ListenAndServeTLS("", "")
+			} else {
+				err = hs.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errc <- fmt.Errorf("%s: %w", name, err)
 			}
 		}()
@@ -466,6 +570,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			defer cancel()
 			_ = hs.Shutdown(sctx)
 		}()
+		return nil
 	}
 
 	if cfg.PGProxy.Enabled {
@@ -486,13 +591,17 @@ func cmdServe(ctx context.Context, args []string) error {
 			return err
 		}
 		gw, err := gateway.NewServer(cfg.Gateway, svc, gateway.NewAgentAuth(dp.sec, cfg.PGProxy.AgentTokensSecret, log),
-			[]gateway.Adapter{gad, ghGW, memGW}, log.With("component", "gateway"), gateway.WithDiary(dp.diary), gateway.WithShadow(shadowRec))
+			append([]gateway.Adapter{gad, ghGW, memGW, nsGW}, saasSvc.Adapters()...), log.With("component", "gateway"), gateway.WithDiary(dp.diary), gateway.WithShadow(shadowRec))
 		if err != nil {
 			return err
 		}
 		issue := http.NewServeMux()
 		broker.NewHandler(brk, log).Register(issue)
 		gw.Mount("POST /v1/credentials/issue", issue.ServeHTTP)
+		if connSvc != nil {
+			connector.NewHandler(connSvc, log.With("component", "connector")).MountOAuth(gateway.PublicMounter{S: gw})
+			go connSvc.AuditWorker(ctx, connFetchers, auditPoll(cfg.Connectors.AuditPoll))
+		}
 		population.NewGatewayHandler(pop, svc, log).Mount(gw) // /v1/instances/register|heartbeat|stop
 		hookVerbs, err := agentgw.LoadToolVerbs(cfg.Policy.Dir)
 		if err != nil {
@@ -504,8 +613,23 @@ func cmdServe(ctx context.Context, args []string) error {
 			return err
 		}
 		gw.Mount(hook.Route, hh.ServeHTTP) // Claude Code PreToolUse decisions
+		// NetSuite QuickStart through Fortik (QuickStart Milestone 2): agents use
+		// this MCP endpoint with their Fortik token; Fortik holds the PAT.
+		nsquickstart.NewProxy(qsSvc, svc, qsMapping, accStore, dp.diary, cfg.Approvals.GrantTTL,
+			log.With("component", "mcp_proxy")).Mount(gw.Mount) // /mcp/netsuite_quickstart, /mcp/<provider>/<tenant>
+		gwBase := strings.TrimRight(cfg.Connectors.PublicURL, "/") // where agents and vendors reach the gateway, if set
+		if gwBase == "" {
+			gwBase = "http://" + cfg.Gateway.Listen
+			if cfg.Gateway.TLS.CertFile != "" {
+				gwBase = "https://" + cfg.Gateway.Listen
+			}
+		}
+		qsSvc.SetAgentEndpoint(gwBase + nsquickstart.ProxyPath)
+		saasSvc.SetAgentBase(gwBase)
 		go gad.NewDelayedSender().Run(ctx)
-		serveHTTP("gateway", cfg.Gateway.Listen, gw)
+		if err := serveHTTP("gateway", cfg.Gateway.Listen, gw, cfg.Gateway.TLS); err != nil {
+			return err
+		}
 	}
 
 	if cfg.API.Enabled {
@@ -533,12 +657,32 @@ func cmdServe(ctx context.Context, args []string) error {
 		srv := api.NewServer(api.Server{Pool: dp.pool, Decider: svc, Diary: dp.diary, Signer: dp.signer, Undo: us,
 			Executors: executors, Policy: eng, Log: log.With("component", "api"),
 			Sessions: authSvc, Revoker: contain, Secrets: store, AgentTokensSecret: cfg.PGProxy.AgentTokensSecret,
-			LoopbackHosts: httpx.IsLoopbackName(cfg.API.Listen), AllowedHosts: cfg.API.AllowedHosts, AgentGuard: pop}, tokAuth)
+			LoopbackHosts: httpx.IsLoopbackName(cfg.API.Listen), AllowedHosts: cfg.API.AllowedHosts, AgentGuard: pop,
+			EnforcementMode: cfg.Enforcement.Mode}, tokAuth)
 		if !httpx.IsLoopbackName(cfg.API.Listen) && len(cfg.API.AllowedHosts) == 0 {
 			log.Warn("api.allowed_hosts is empty on a non-loopback listener: any Host header is accepted (DNS rebinding)")
 		}
 		srv.Mount(authSvc.Routes)
 		srv.Mount(access.NewHandler(accStore, dp.pool, log).Register)
+		nsSync := netsuite.NewSyncer(dp.pool, dp.diary, nsConn, svc, alertStore, log.With("component", "netsuite"))
+		srv.Mount(nsSync.Register) // GET /v1/saas/netsuite, POST /v1/saas/netsuite/sync
+		go nsSync.Worker(ctx, 5*time.Minute)
+		go qsSvc.Worker(ctx, cfg.MCPUpstreams.CheckInterval, alertStore) // QuickStart connection, token expiry, tool changes
+		srv.Mount(qsSvc.Register)                                        // /v1/integrations/{key}/mcp[/refresh], OAuth, legacy /v1/saas/netsuite_quickstart
+		srv.Mount(saasSvc.Register)                                      // GET /v1/integrations/{key}/check (Salesforce, ServiceNow, SAP REST)
+		decls := coverage.Replace(coverage.Replace(coverage.Replace(coverage.Declarations(), netsuite.Declaration()), nsquickstart.Declaration()), nsquickstart.DeclarationAIConnector())
+		for _, sys := range saasrest.Systems {
+			decls = coverage.Replace(coverage.Replace(decls, saasrest.Declaration(sys)), nsquickstart.DeclarationSaaSMCP(sys+"_mcp"))
+		}
+		srv.Mount(coverage.New(dp.pool, decls, func(system string) bool {
+			switch system {
+			case "claude_code":
+				return cfg.Gateway.Enabled
+			case "agentgateway":
+				return cfg.AgentGW.Enabled
+			}
+			return false
+		}).Register)
 		srv.Mount(integrations.NewHandler(intStore, testers, log).Register)
 		sse := events.NewSSE(bus, events.SSEOptions{Head: tailer.Head, Backfill: tailer.Backfill, Log: log,
 			Revalidate: func(r *http.Request) error { return srv.Reauthorize(r, authz.RoleAuditor) }})
@@ -551,6 +695,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		srv.Mount(containment.NewHandler(contain, log.With("component", "containment")).Register)
 		srv.Mount(memory.NewHandler(memSvc, log.With("component", "memory")).Register)
 		srv.Mount(swarm.NewHandler(swarmSvc, log.With("component", "swarm")).Register)
+		if connSvc != nil {
+			srv.Mount(connector.NewHandler(connSvc, log.With("component", "connector")).RegisterAdmin)
+		}
 		srv.Mount(baseline.NewHandler(baseSvc).Register)
 		srv.Mount(shadow.NewHandler(shadowSvc, log.With("component", "shadow")).Register)
 		mapLive := commap.NewLive(bus, events.SSEOptions{Head: tailer.Head, Backfill: tailer.Backfill, Log: log,
@@ -559,7 +706,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		if cfg.Console.Enabled {
 			srv.Mount(func(mux *http.ServeMux) { mux.Handle("/", console.Handler()) }) // last: least specific
 		}
-		serveHTTP("api", cfg.API.Listen, srv.Handler())
+		if err := serveHTTP("api", cfg.API.Listen, srv.Handler(), cfg.API.TLS); err != nil {
+			return err
+		}
 	}
 
 	select {
@@ -575,6 +724,7 @@ func cmdServe(ctx context.Context, args []string) error {
 func cmdMigrate(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ExitOnError)
 	cfgPath := fs.String("config", "fortik.yaml", "config file")
+	grantApp := fs.String("grant-app", "", "after migrating, grant the application role (e.g. fortik_app) its least privileges")
 	_ = fs.Parse(args)
 	dp, err := load(ctx, *cfgPath)
 	if err != nil {
@@ -586,6 +736,21 @@ func cmdMigrate(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf("applied %d migration(s): %v\n", len(applied), applied)
+	if *grantApp != "" {
+		sql, err := migrations.AppGrants(*grantApp)
+		if err != nil {
+			return err
+		}
+		conn, err := dp.pool.Acquire(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Release()
+		if _, err := conn.Conn().PgConn().Exec(ctx, sql).ReadAll(); err != nil {
+			return fmt.Errorf("grant %s: %w", *grantApp, err)
+		}
+		fmt.Printf("granted application role %s its least privileges\n", *grantApp)
+	}
 	return nil
 }
 
@@ -901,4 +1066,119 @@ func cmdSecretsMergeJSON(ctx context.Context, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "secret %s: added %d key(s)\n", *name, added)
 	return st.Put(ctx, *name, b)
+}
+
+// recordDeploymentMode appends enforcement.deployment_mode to the Diary when
+// the configured mode differs from the last one recorded, so a switch to (or
+// from) observe mode is always auditable.
+func recordDeploymentMode(ctx context.Context, dp *deps, mode string) error {
+	var last string
+	err := dp.pool.QueryRow(ctx, `SELECT COALESCE(body_json::jsonb -> 'data' ->> 'mode', '') FROM diary
+		WHERE event_type = 'enforcement.deployment_mode' ORDER BY seq DESC LIMIT 1`).Scan(&last)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("enforcement mode: %w", err)
+	}
+	if errors.Is(err, pgx.ErrNoRows) && mode == "enforce" {
+		return nil // never recorded, and the default: nothing changed
+	}
+	if last == mode {
+		return nil
+	}
+	_, err = dp.diary.Append(ctx, diary.Event{EventType: "enforcement.deployment_mode", Actor: "system:config",
+		Data: map[string]any{"mode": mode, "previous": last}})
+	return err
+}
+
+// buildConnectors wires the SaaS copilot connector broker (Phase 6): Fortik's
+// own OAuth client per upstream (secrets from the secret provider) and the
+// vendor audit-log fetchers. Disabled: nil, nil.
+func buildConnectors(ctx context.Context, cfg *config.Config, dp *deps, dec decide.Decider, st secrets.Store, intStore integrations.Source,
+	log *slog.Logger) (*connector.Service, map[string]connector.AuditFetcher, error) {
+	if !cfg.Connectors.Enabled {
+		return nil, nil, nil
+	}
+	if !secrets.Writable(dp.sec) {
+		return nil, nil, errors.New("connectors: a writable secret store is required (upstream grants are kept there, never in Postgres)")
+	}
+	ups := map[string]*connector.Upstream{}
+	for name, uc := range map[string]config.ConnectorUpstreamConfig{connector.UpstreamGoogle: cfg.Connectors.Google, connector.UpstreamGitHub: cfg.Connectors.GitHub} {
+		if uc.ClientID == "" {
+			continue
+		}
+		sec, err := dp.sec.Get(ctx, uc.ClientSecretSecret)
+		if err != nil {
+			return nil, nil, fmt.Errorf("connectors (%s): client secret %q: %w", name, uc.ClientSecretSecret, err)
+		}
+		u, err := connector.NewUpstream(name, uc, strings.TrimSpace(string(sec)))
+		if err != nil {
+			return nil, nil, err
+		}
+		ups[name] = u
+	}
+	svc, err := connector.New(dp.pool, dp.diary, dec, dp.ctl, st, ups, cfg.Connectors.PublicURL, log)
+	if err != nil {
+		return nil, nil, err
+	}
+	fetchers := map[string]connector.AuditFetcher{}
+	if u := ups[connector.UpstreamGoogle]; u != nil {
+		g := discoverers.NewGoogle(intStore, nil, cfg.Gateway.GoogleTokenURL, "", log)
+		fetchers[connector.UpstreamGoogle] = connector.GoogleAudit{Up: u, Token: func(ctx context.Context) (string, error) {
+			return g.AccessToken(ctx, "https://www.googleapis.com/auth/admin.reports.audit.readonly")
+		}}
+	}
+	if u := ups[connector.UpstreamGitHub]; u != nil && u.AuditOrg != "" && cfg.Connectors.GitHub.AuditTokenSecret != "" {
+		name := cfg.Connectors.GitHub.AuditTokenSecret
+		fetchers[connector.UpstreamGitHub] = connector.GitHubAudit{Up: u, AppID: cfg.Connectors.GitHub.AppID, Token: func(ctx context.Context) (string, error) {
+			b, err := dp.sec.Get(ctx, name)
+			return strings.TrimSpace(string(b)), err
+		}}
+	}
+	log.Info("connector broker enabled", "public_url", cfg.Connectors.PublicURL, "callback", svc.CallbackURL(), "upstreams", len(ups),
+		"audit_sources", len(fetchers))
+	return svc, fetchers, nil
+}
+
+func auditPoll(d time.Duration) time.Duration {
+	if d == 0 {
+		return 5 * time.Minute
+	}
+	return d // negative: AuditWorker does nothing
+}
+
+// withConnectorRevoke revokes a system's credentials and, for a copilot
+// connector reaching that system, its grant (timed suspensions, Phase 6).
+type withConnectorRevoke struct {
+	base   overrides.Revoker
+	conn   *connector.Service
+	system string
+}
+
+func (w withConnectorRevoke) RevokeAgent(ctx context.Context, agentID string) (string, error) {
+	d1, e1 := w.base.RevokeAgent(ctx, agentID)
+	if w.system == connector.System {
+		return d1, e1
+	}
+	d2, e2 := w.conn.RevokeAgentSystem(ctx, agentID, w.system)
+	if d2 != "no active connector grants" {
+		d1 += "; connectors: " + d2
+	}
+	return d1, errors.Join(e1, e2)
+}
+
+// captureAllowed refuses FORTIK_POLICY_CAPTURE (every policy input written to
+// a local file: recipients, table names, labels) unless every enabled
+// listener is loopback-only, i.e. a developer's machine.
+func captureAllowed(cfg *config.Config) error {
+	if os.Getenv(policy.CaptureEnv) == "" {
+		return nil
+	}
+	for _, l := range []struct {
+		on   bool
+		addr string
+	}{{cfg.API.Enabled, cfg.API.Listen}, {cfg.Gateway.Enabled, cfg.Gateway.Listen}, {cfg.PGProxy.Enabled, cfg.PGProxy.Listen}, {cfg.AgentGW.Enabled, cfg.AgentGW.Listen}} {
+		if l.on && !httpx.IsLoopbackName(l.addr) {
+			return fmt.Errorf("%s is for development only: refusing to start with listener %q on a non-loopback address", policy.CaptureEnv, l.addr)
+		}
+	}
+	return nil
 }

@@ -28,6 +28,8 @@ import {
   type External,
   type HTTPForm,
   type MCPForm,
+  type NetSuiteForm,
+  type SaaSForm,
   type DriveForm,
   type GitHubForm,
   type GmailForm,
@@ -132,6 +134,8 @@ function SystemEditor({
           {system === 'a2a' && <A2AEditor f={form as A2AForm} set={setForm} />}
           {system === 'http' && <HTTPEditor f={form as HTTPForm} set={setForm} />}
           {system === 'mcp' && <MCPEditor f={form as MCPForm} set={setForm} />}
+          {system === 'netsuite' && <NetSuiteEditor f={form as NetSuiteForm} set={setForm} />}
+          {(system === 'salesforce' || system === 'servicenow' || system === 'sap') && <SaaSEditor system={system} f={form as SaaSForm} set={setForm} />}
         </fieldset>
         {problems.length > 0 && (
           <div className="alert error" style={{ marginTop: 12 }} role="alert">
@@ -508,6 +512,127 @@ function HTTPEditor({ f, set }: { f: HTTPForm; set: SetForm }) {
           help="Exact hosts, or *.example.org for any subdomain."
         />
       )}
+    </div>
+  );
+}
+
+function NetSuiteEditor({ f, set }: { f: NetSuiteForm; set: SetForm }) {
+  return (
+    <div className="form-grid">
+      <Select
+        id="ns-mode"
+        label="Mode"
+        value={f.mode}
+        options={MODE_OPTS}
+        onChange={(mode) => set({ ...f, mode })}
+        help="Applies to every NetSuite transport (REST and MCP). Read only allows only reads (POL-021); MCP writes are held for approval even with read and write (config netsuite.mcp_writes_require_approval)."
+      />
+      <label className="check" style={{ alignSelf: 'end' }}>
+        <input type="checkbox" checked={f.suiteql} onChange={(e) => set({ ...f, suiteql: e.target.checked })} /> SuiteQL queries (REST gateway only, POL-1008)
+      </label>
+      <div className="field">
+        <label className="check">
+          <input type="checkbox" aria-label="All record types" checked={f.allTypes} onChange={(e) => set({ ...f, allTypes: e.target.checked })} /> All record types
+        </label>
+        {!f.allTypes && (
+          <ListEditor
+            id="ns-types"
+            label="Record types"
+            values={f.recordTypes}
+            placeholder="vendorbill"
+            onChange={(recordTypes) => set({ ...f, recordTypes })}
+            help="Lower-case record type names (QuickStart's VendorBill is vendorbill). Others are refused (POL-1007)."
+          />
+        )}
+      </div>
+      <div className="field">
+        <label className="check">
+          <input type="checkbox" aria-label="All QuickStart tools" checked={f.allTools} onChange={(e) => set({ ...f, allTools: e.target.checked })} /> All QuickStart tools the mode allows
+        </label>
+        {!f.allTools && (
+          <ListEditor
+            id="ns-qs-tools"
+            label="QuickStart tools"
+            values={f.quickstartTools}
+            placeholder="read_record"
+            onChange={(quickstartTools) => set({ ...f, quickstartTools })}
+            help="Only these QuickStart MCP tools may be called and listed (POL-1108)."
+          />
+        )}
+      </div>
+      <div className="field">
+        <label className="check">
+          <input type="checkbox" aria-label="All NetSuite tenants" checked={f.allTenants} onChange={(e) => set({ ...f, allTenants: e.target.checked })} /> All NetSuite tenants
+        </label>
+        {!f.allTenants && (
+          <ListEditor
+            id="ns-tenants"
+            label="NetSuite tenants"
+            values={f.tenants}
+            placeholder="netsuite:acme"
+            onChange={(tenants) => set({ ...f, tenants })}
+            help="Integration ids from Integrations > NetSuite. Calls to any other tenant are refused on every transport, REST and MCP (POL-1010)."
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+const OBJECT_NOUN: Record<string, { label: string; placeholder: string; help: string }> = {
+  salesforce: { label: 'Objects', placeholder: 'account', help: 'Salesforce object API names (lower-cased), e.g. account, contact, case. Calls to others are refused (POL-1211).' },
+  servicenow: { label: 'Tables', placeholder: 'incident', help: 'ServiceNow table names, e.g. incident, change_request. Calls to others are refused (POL-1211).' },
+  sap: {
+    label: 'Entity sets',
+    placeholder: 'api_business_partner/a_businesspartner',
+    help: 'SAP <SERVICE>/<EntitySet> (lower-cased), e.g. api_business_partner/a_businesspartner. Calls to others are refused (POL-1211).',
+  },
+};
+
+function SaaSEditor({ system, f, set }: { system: 'salesforce' | 'servicenow' | 'sap'; f: SaaSForm; set: SetForm }) {
+  const noun = OBJECT_NOUN[system]!;
+  return (
+    <div className="form-grid">
+      <Select
+        id={`${system}-mode`}
+        label="Mode"
+        value={f.mode}
+        options={MODE_OPTS}
+        onChange={(mode) => set({ ...f, mode })}
+        help="Applies to both connection methods (REST API and MCP Server). Read only allows reads only (POL-021); with read and write, changes are still held for approval and deletes are red holds."
+      />
+      <div className="field">
+        <label className="check">
+          <input type="checkbox" aria-label={`All ${noun.label.toLowerCase()}`} checked={f.allObjects} onChange={(e) => set({ ...f, allObjects: e.target.checked })} /> All{' '}
+          {noun.label.toLowerCase()}
+        </label>
+        {!f.allObjects && (
+          <ListEditor id={`${system}-objects`} label={noun.label} values={f.objects} placeholder={noun.placeholder} onChange={(objects) => set({ ...f, objects })} help={noun.help} />
+        )}
+      </div>
+      <div className="field">
+        <label className="check">
+          <input type="checkbox" aria-label="All tenants" checked={f.allTenants} onChange={(e) => set({ ...f, allTenants: e.target.checked })} /> All tenants
+        </label>
+        {!f.allTenants && (
+          <ListEditor
+            id={`${system}-tenants`}
+            label="Tenants"
+            values={f.tenants}
+            placeholder={`${system}:default`}
+            onChange={(tenants) => set({ ...f, tenants })}
+            help="Integration ids from Integrations. Calls to any other tenant are refused on REST and MCP alike (POL-1010)."
+          />
+        )}
+      </div>
+      <div className="field">
+        <label className="check">
+          <input type="checkbox" aria-label="All MCP tools" checked={f.allTools} onChange={(e) => set({ ...f, allTools: e.target.checked })} /> All MCP tools the mode allows
+        </label>
+        {!f.allTools && (
+          <ListEditor id={`${system}-tools`} label="MCP tools" values={f.tools} placeholder="tool_name" onChange={(tools) => set({ ...f, tools })} help="Only these tools of the MCP server may be called and listed (POL-1212)." />
+        )}
+      </div>
     </div>
   );
 }

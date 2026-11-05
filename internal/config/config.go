@@ -49,6 +49,98 @@ type Config struct {
 	Map      MapConfig      `yaml:"map"`
 	Shadow   ShadowConfig   `yaml:"shadow"`
 	Baseline BaselineConfig `yaml:"baseline"`
+
+	// Phase 6
+	Enforcement EnforcementConfig `yaml:"enforcement"`
+	Connectors  ConnectorsConfig  `yaml:"connectors"`
+
+	// Upstream MCP servers Fortik itself connects to (NetSuite QuickStart).
+	MCPUpstreams MCPUpstreamsConfig `yaml:"mcp_upstreams"`
+
+	// Upstream REST APIs of Salesforce, ServiceNow and SAP connections.
+	SaaSUpstreams SaaSUpstreamsConfig `yaml:"saas_upstreams"`
+}
+
+// SaaSUpstreamsConfig limits where Fortik sends Salesforce, ServiceNow and
+// SAP REST credentials (an SSRF guard). Each provider's own domains are
+// always permitted (*.salesforce.com; *.service-now.com,
+// *.servicenowservices.com; *.s4hana.cloud.sap, *.s4hana.ondemand.com);
+// other hosts (an on-premise SAP Gateway, a custom token endpoint) must be
+// listed. Addresses must be public.
+type SaaSUpstreamsConfig struct {
+	AllowedHosts []string `yaml:"allowed_hosts"`
+	// AllowLoopback permits http(s) loopback URLs: local fakes only.
+	AllowLoopback bool `yaml:"allow_loopback"`
+}
+
+// MCPUpstreamsConfig limits where Fortik's own MCP client may connect with
+// a stored token (an SSRF guard: an administrator-entered endpoint cannot
+// reach other hosts or internal addresses).
+type MCPUpstreamsConfig struct {
+	// AllowedHosts are the exact host names (no port) an MCP endpoint may
+	// name. Default: my.quickstartapi.netsuite.com. Addresses they resolve
+	// to must be public.
+	AllowedHosts []string `yaml:"allowed_hosts"`
+	// AllowLoopback also permits http(s)://127.0.0.1, [::1] and localhost
+	// endpoints: only for local fakes in development and tests.
+	AllowLoopback bool `yaml:"allow_loopback"`
+	// CheckInterval: how often Fortik re-checks a configured upstream
+	// (initialize + tools/list) and raises alerts for a broken connection,
+	// an expiring token or changed tools. Default 30m; negative disables.
+	CheckInterval time.Duration `yaml:"check_interval"`
+}
+
+// ConnectorsConfig: the SaaS copilot connector broker (docs/PHASE6_DESIGN.md
+// §6). Vendors' connectors use Fortik-issued OAuth clients; Fortik holds the
+// upstream grant with its own OAuth client per upstream and decides every
+// token issue and refresh.
+type ConnectorsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// PublicURL is where vendors and browsers reach the gateway's /oauth/*
+	// endpoints (e.g. https://fortik.example.com); the upstream callback is
+	// PublicURL + /oauth/callback.
+	PublicURL string                  `yaml:"public_url"`
+	Google    ConnectorUpstreamConfig `yaml:"google"`
+	GitHub    ConnectorUpstreamConfig `yaml:"github"`
+	// AuditPoll: how often vendor audit logs are pulled (default 5m; 0 keeps
+	// the default, a negative value disables pulling).
+	AuditPoll time.Duration `yaml:"audit_poll"`
+}
+
+// ConnectorUpstreamConfig is Fortik's own OAuth client at one upstream. The
+// client secret is read from the secret provider by name. URLs default to the
+// provider's public endpoints (tests point them at local fakes).
+type ConnectorUpstreamConfig struct {
+	ClientID           string `yaml:"client_id"`
+	ClientSecretSecret string `yaml:"client_secret_secret"`
+	AuthURL            string `yaml:"auth_url"`
+	TokenURL           string `yaml:"token_url"`
+	RevokeURL          string `yaml:"revoke_url"`
+	APIBaseURL         string `yaml:"api_base_url"` // GitHub API / Google Admin Reports base
+	AuditOrg           string `yaml:"audit_org"`    // GitHub: organization whose audit log is pulled
+	// GitHub: a secret holding a token that may read the org audit log
+	// (read:audit_log), and the App's id to match oauth_application_id.
+	AuditTokenSecret string `yaml:"audit_token_secret"`
+	AppID            string `yaml:"app_id"`
+}
+
+// TLSConfig is one listener's TLS / mutual TLS (Phase 6). Without a
+// certificate the listener is plaintext, which a non-loopback listener
+// refuses unless insecure_plaintext is set (e.g. behind a TLS-terminating
+// sidecar on a private network).
+type TLSConfig struct {
+	CertFile          string `yaml:"cert_file"`
+	KeyFile           string `yaml:"key_file"`
+	ClientCAFile      string `yaml:"client_ca_file"`
+	ClientAuth        string `yaml:"client_auth"` // none | request | require (default require when client_ca_file is set)
+	InsecurePlaintext bool   `yaml:"insecure_plaintext"`
+}
+
+// EnforcementConfig: enforce (default) or observe for the whole deployment.
+// In observe mode Fortik decides and records but does not enforce the
+// policy's opinion (docs/PHASE6_DESIGN.md §1); agents may override it.
+type EnforcementConfig struct {
+	Mode string `yaml:"mode"` // enforce | observe
 }
 
 // SwarmConfig: swarm detection and the Max-5 breaker.
@@ -149,11 +241,16 @@ type OverridesConfig struct {
 
 // AgentGWConfig: Fortik's callout service for agentgateway (MCP, A2A, HTTP egress).
 type AgentGWConfig struct {
-	Enabled       bool              `yaml:"enabled"`
-	Listen        string            `yaml:"listen"`         // gRPC, default 127.0.0.1:9091
-	A2ATargets    map[string]string `yaml:"a2a_targets"`    // route/host -> target agent id
-	MCPServers    map[string]string `yaml:"mcp_servers"`    // route/host -> MCP server name
-	InternalHosts []string          `yaml:"internal_hosts"` // hosts considered inside the company
+	Enabled    bool              `yaml:"enabled"`
+	Listen     string            `yaml:"listen"` // gRPC, default 127.0.0.1:9091
+	TLS        TLSConfig         `yaml:"tls"`
+	A2ATargets map[string]string `yaml:"a2a_targets"` // route/host -> target agent id
+	MCPServers map[string]string `yaml:"mcp_servers"` // route/host -> MCP server name
+	// MCPServerSystems maps an MCP server name to the business system it
+	// reaches (e.g. quickstart: netsuite): that system's timed suspensions
+	// then cover the server's tool calls too. Only ever stricter.
+	MCPServerSystems map[string]string `yaml:"mcp_server_systems"`
+	InternalHosts    []string          `yaml:"internal_hosts"` // hosts considered inside the company
 }
 
 // HookConfig: Claude Code / coding-agent hook endpoint behaviour.
@@ -163,8 +260,9 @@ type HookConfig struct {
 
 // GatewayConfig: the agent-facing app gateway (/gw/*, /v1/credentials/issue).
 type GatewayConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Listen  string `yaml:"listen"` // default 127.0.0.1:8090
+	Enabled bool      `yaml:"enabled"`
+	Listen  string    `yaml:"listen"` // default 127.0.0.1:8090
+	TLS     TLSConfig `yaml:"tls"`
 	// Overrides for upstream base URLs (tests point these at local fakes).
 	GoogleTokenURL  string        `yaml:"google_token_url"`
 	GmailBaseURL    string        `yaml:"gmail_base_url"`
@@ -212,7 +310,11 @@ type DevLoginUser struct {
 
 type EventsConfig struct {
 	Provider string `yaml:"provider"` // memory | nats (default memory)
-	URL      string `yaml:"url"`      // nats://127.0.0.1:4222
+	URL      string `yaml:"url"`      // nats://127.0.0.1:4222 (tls://... for TLS)
+	// Phase 6: TLS / mutual TLS to NATS.
+	TLSCAFile   string `yaml:"tls_ca_file"`
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
 }
 
 type LadderConfig struct {
@@ -225,8 +327,9 @@ type ConsoleConfig struct {
 }
 
 type APIConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Listen  string `yaml:"listen"`
+	Enabled bool      `yaml:"enabled"`
+	Listen  string    `yaml:"listen"`
+	TLS     TLSConfig `yaml:"tls"`
 	// TokensSecret names a secret holding JSON: [{"name","sha256","roles":[...]}].
 	// Phase 1 service/operator authentication; OIDC for humans arrives with the console.
 	TokensSecret string `yaml:"tokens_secret"`
@@ -265,6 +368,10 @@ type SecretsConfig struct {
 // call fails closed except READs explicitly allowlisted here.
 type FailConfig struct {
 	GreenReadAllowlist []FailOpenEntry `yaml:"green_read_allowlist"`
+	// SpoolDir keeps fail-path decisions locally while Fortik's database is
+	// unreachable; they are appended to the Diary when it is back (Phase 6).
+	// Empty = logged only.
+	SpoolDir string `yaml:"spool_dir"`
 }
 
 type FailOpenEntry struct {
@@ -273,14 +380,19 @@ type FailOpenEntry struct {
 }
 
 type PGProxyConfig struct {
-	Enabled           bool                      `yaml:"enabled"`
-	Listen            string                    `yaml:"listen"`
-	AgentTokensSecret string                    `yaml:"agent_tokens_secret"` // JSON {"agent_id":"<sha256 hex of token>"}
-	TLSCertFile       string                    `yaml:"tls_cert_file"`
-	TLSKeyFile        string                    `yaml:"tls_key_file"`
-	Upstreams         map[string]UpstreamConfig `yaml:"upstreams"` // key = database name the agent connects to
-	DataLabels        []DataLabelRule           `yaml:"data_labels"`
-	PreQueryTimeout   time.Duration             `yaml:"pre_query_timeout"`
+	Enabled           bool   `yaml:"enabled"`
+	Listen            string `yaml:"listen"`
+	AgentTokensSecret string `yaml:"agent_tokens_secret"` // JSON {"agent_id":"<sha256 hex of token>"}
+	TLSCertFile       string `yaml:"tls_cert_file"`
+	TLSKeyFile        string `yaml:"tls_key_file"`
+	// Phase 6: verify client certificates (mutual TLS) and refuse clients
+	// that do not negotiate TLS at all.
+	TLSClientCAFile string                    `yaml:"tls_client_ca_file"`
+	TLSClientAuth   string                    `yaml:"tls_client_auth"` // none | request | require
+	TLSRequired     bool                      `yaml:"tls_required"`
+	Upstreams       map[string]UpstreamConfig `yaml:"upstreams"` // key = database name the agent connects to
+	DataLabels      []DataLabelRule           `yaml:"data_labels"`
+	PreQueryTimeout time.Duration             `yaml:"pre_query_timeout"`
 }
 
 type UpstreamConfig struct {
@@ -326,6 +438,21 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.MCPUpstreams.CheckInterval == 0 {
+		c.MCPUpstreams.CheckInterval = 30 * time.Minute
+	}
+	if c.MCPUpstreams.AllowedHosts == nil {
+		c.MCPUpstreams.AllowedHosts = []string{"my.quickstartapi.netsuite.com"}
+	}
+	for i, h := range c.SaaSUpstreams.AllowedHosts {
+		c.SaaSUpstreams.AllowedHosts[i] = strings.ToLower(strings.TrimSpace(h))
+	}
+	for i, h := range c.MCPUpstreams.AllowedHosts {
+		c.MCPUpstreams.AllowedHosts[i] = strings.ToLower(strings.TrimSpace(h))
+	}
+	if c.Enforcement.Mode == "" {
+		c.Enforcement.Mode = "enforce"
+	}
 	if v := os.Getenv("FORTIK_DATABASE_URL"); v != "" {
 		c.DatabaseURL = v
 	}
@@ -510,8 +637,16 @@ func (c *Config) applyDefaults() {
 
 // Validate rejects configurations that would weaken enforcement.
 func (c *Config) Validate() error {
+	if c.Enforcement.Mode != "enforce" && c.Enforcement.Mode != "observe" {
+		return fmt.Errorf("config: enforcement.mode must be enforce or observe, got %q", c.Enforcement.Mode)
+	}
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("config: database_url (or FORTIK_DATABASE_URL) is required")
+	}
+	for _, h := range c.MCPUpstreams.AllowedHosts {
+		if h == "" || strings.ContainsAny(h, ":/@ *") || net.ParseIP(h) != nil || !strings.Contains(h, ".") {
+			return fmt.Errorf("config: mcp_upstreams.allowed_hosts entries must be exact DNS host names without port or wildcard, got %q", h)
+		}
 	}
 	if (c.Secrets.Provider == "file" || c.Secrets.Provider == "encfile") && c.Secrets.Dir == "" {
 		return fmt.Errorf("config: secrets.dir is required for the %s secret provider", c.Secrets.Provider)

@@ -216,16 +216,16 @@ func (s *PGStore) OpenTx(ctx context.Context, tx pgx.Tx, h Hop, actor string) (H
 		return Hop{}, "", err
 	}
 	tok, err := s.signer.sign(Claims{DelegationID: h.DelegationID, Root: h.Root, Chain: h.Chain, Depth: h.Depth,
-		TaskID: h.TaskID, IssuedAt: h.CreatedAt, ExpiresAt: h.ExpiresAt})
+		TaskID: h.TaskID, Scope: h.Scope, Corr: h.CorrelationID, IssuedAt: h.CreatedAt, ExpiresAt: h.ExpiresAt})
 	if err != nil {
 		return Hop{}, "", err
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO delegations (delegation_id, parent_id, root_agent, from_agent, to_agent, chain, depth, task_id,
-			channel, action_id, status, created_at, expires_at)
-		VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, NULLIF($8, ''), $9, NULLIF($10, ''), 'open', $11, $12)`,
+			channel, action_id, status, created_at, expires_at, scope, correlation_id)
+		VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, NULLIF($8, ''), $9, NULLIF($10, ''), 'open', $11, $12, $13, NULLIF($14, ''))`,
 		h.DelegationID, h.ParentID, h.Root, h.From, h.To, h.Chain, h.Depth, h.TaskID, h.Channel, h.ActionID,
-		h.CreatedAt, h.ExpiresAt)
+		h.CreatedAt, h.ExpiresAt, h.Scope, h.CorrelationID)
 	if err != nil {
 		return Hop{}, "", fmt.Errorf("insert delegation: %w", err)
 	}
@@ -233,17 +233,19 @@ func (s *PGStore) OpenTx(ctx context.Context, tx pgx.Tx, h Hop, actor string) (H
 		actor = s.actor
 	}
 	if _, err := s.diary.AppendTx(ctx, tx, diary.Event{AgentID: h.From, EventType: EventOpened, Actor: actor, Data: map[string]any{
-		"delegation_id": h.DelegationID,
-		"parent_id":     h.ParentID,
-		"chain":         h.Chain,
-		"root":          h.Root,
-		"from":          h.From,
-		"to":            h.To,
-		"channel":       h.Channel,
-		"depth":         h.Depth,
-		"task_id":       h.TaskID,
-		"action_id":     h.ActionID,
-		"expires_at":    h.ExpiresAt,
+		"delegation_id":  h.DelegationID,
+		"parent_id":      h.ParentID,
+		"chain":          h.Chain,
+		"root":           h.Root,
+		"from":           h.From,
+		"to":             h.To,
+		"channel":        h.Channel,
+		"depth":          h.Depth,
+		"task_id":        h.TaskID,
+		"task_scope":     h.Scope,
+		"correlation_id": h.CorrelationID,
+		"action_id":      h.ActionID,
+		"expires_at":     h.ExpiresAt,
 	}}); err != nil {
 		return Hop{}, "", err
 	}
@@ -271,6 +273,11 @@ func (s *PGStore) prepare(h *Hop) error {
 		return bad("malformed parent id")
 	case h.ActionID != "" && !agentIDPattern.MatchString(h.ActionID):
 		return bad("malformed action id")
+	case h.CorrelationID != "" && !agentIDPattern.MatchString(h.CorrelationID):
+		return bad("malformed correlation id")
+	}
+	if err := h.Scope.Validate(); err != nil {
+		return bad("%v", err)
 	}
 	for _, a := range h.Chain {
 		if !agentIDPattern.MatchString(a) {
@@ -310,12 +317,12 @@ func printable(s string) bool {
 }
 
 const hopCols = `delegation_id, COALESCE(parent_id, ''), root_agent, from_agent, to_agent, chain, depth, COALESCE(task_id, ''),
-	channel, COALESCE(action_id, ''), status, created_at, expires_at, closed_at`
+	channel, COALESCE(action_id, ''), status, created_at, expires_at, closed_at, scope, COALESCE(correlation_id, '')`
 
 func scanHop(row pgx.Row) (Hop, error) {
 	var h Hop
 	if err := row.Scan(&h.DelegationID, &h.ParentID, &h.Root, &h.From, &h.To, &h.Chain, &h.Depth, &h.TaskID,
-		&h.Channel, &h.ActionID, &h.Status, &h.CreatedAt, &h.ExpiresAt, &h.ClosedAt); err != nil {
+		&h.Channel, &h.ActionID, &h.Status, &h.CreatedAt, &h.ExpiresAt, &h.ClosedAt, &h.Scope, &h.CorrelationID); err != nil {
 		return Hop{}, err
 	}
 	h.CreatedAt, h.ExpiresAt = h.CreatedAt.UTC(), h.ExpiresAt.UTC()

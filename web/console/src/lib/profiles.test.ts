@@ -12,6 +12,10 @@ describe('access profile forms', () => {
     a2a: { may_delegate_to: ['agent_b', 'agent_c'], max_depth: 3 },
     http: { external: 'allowlist', allowed_domains: ['api.example.com', '*.example.org'] },
     mcp: { servers: { 'github-mcp': ['*'], memory: ['read_graph', 'search_nodes'] } },
+    netsuite: { mode: 'read_only', record_types: ['customer', 'vendorbill'], suiteql: false, quickstart_tools: ['list_records', 'read_record'] },
+    salesforce: { mode: 'read_write', objects: ['account', 'contact'], integrations: ['salesforce:default'] },
+    servicenow: { mode: 'read_only', objects: ['*'], mcp_tools: ['get_incident'] },
+    sap: { mode: 'read_only', objects: ['api_business_partner/a_businesspartner'] },
   };
 
   it('round-trips every documented profile shape', () => {
@@ -59,5 +63,37 @@ describe('access profile forms', () => {
   it('drops blank and duplicate list entries', () => {
     const gh = toForm('github', samples.github) as GitHubForm;
     expect(fromForm('github', { ...gh, repos: ['org/repo', ' ', 'org/repo', ' org/two '] })).toMatchObject({ repos: ['org/repo', 'org/two'] });
+  });
+
+  it('netsuite: record types, SuiteQL and the QuickStart tool allowlist round-trip', () => {
+    expect(fromForm('netsuite', toForm('netsuite', null))).toEqual({ mode: 'none', record_types: [], suiteql: false });
+    const all = { mode: 'read_write', record_types: ['*'], suiteql: true };
+    expect(fromForm('netsuite', toForm('netsuite', all))).toEqual(all);
+    const narrow = { mode: 'read_only', record_types: ['customer', 'term'], suiteql: false, quickstart_tools: ['read_record'] };
+    expect(fromForm('netsuite', toForm('netsuite', narrow))).toEqual(narrow);
+    expect(summarize('netsuite', narrow)).toContain('QuickStart tools: read_record');
+    expect(
+      validateForm('netsuite', { mode: 'read_only', allTypes: false, recordTypes: ['Vendor Bill'], suiteql: false, allTools: false, quickstartTools: ['Read Record'], allTenants: true, tenants: [] }),
+    ).toHaveLength(2);
+  });
+
+  it('netsuite: the tenant restriction (integrations) round-trips and is validated', () => {
+    const tenants = { mode: 'read_only', record_types: ['*'], suiteql: false, integrations: ['netsuite:acme', 'netsuite:quickstart'] };
+    expect(fromForm('netsuite', toForm('netsuite', tenants))).toEqual(tenants);
+    expect(summarize('netsuite', tenants)).toContain('tenants: netsuite:acme, netsuite:quickstart');
+    // ["*"] and absent both mean every tenant; the form writes nothing then.
+    expect(fromForm('netsuite', toForm('netsuite', { mode: 'read_only', record_types: ['*'], suiteql: false, integrations: ['*'] }))).not.toHaveProperty('integrations');
+    expect(summarize('netsuite', { mode: 'read_only', record_types: ['*'], suiteql: false })).toContain('every NetSuite tenant');
+    expect(
+      validateForm('netsuite', { mode: 'read_only', allTypes: true, recordTypes: [], suiteql: false, allTools: true, quickstartTools: [], allTenants: false, tenants: ['acme', 'netsuite:Acme'] }),
+    ).toHaveLength(1);
+  });
+
+  it('salesforce / servicenow / sap: one profile for REST and MCP, restrictive by default', () => {
+    expect(fromForm('salesforce', toForm('salesforce', null))).toEqual({ mode: 'none', objects: [] });
+    expect(summarize('servicenow', { mode: 'read_only', objects: ['*'] })).toContain('every object, every tenant, every MCP tool the mode allows');
+    expect(
+      validateForm('sap', { mode: 'read_only', allObjects: true, objects: [], allTenants: false, tenants: ['salesforce:x'], allTools: false, tools: ['bad tool'] }),
+    ).toHaveLength(2);
   });
 });

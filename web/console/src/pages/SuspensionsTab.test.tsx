@@ -58,7 +58,7 @@ describe('SuspensionsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Suspend an app' }));
     const dialog = screen.getByRole('dialog');
     const app = within(dialog).getByLabelText('App') as HTMLSelectElement;
-    expect([...app.options].map((o) => o.value)).toEqual(['gmail', 'drive', 'github', 'aws', 'postgres']);
+    expect([...app.options].map((o) => o.value)).toEqual(['gmail', 'drive', 'github', 'aws', 'postgres', 'netsuite', 'salesforce', 'servicenow', 'sap']);
     fireEvent.change(app, { target: { value: 'aws' } });
     fireEvent.change(within(dialog).getByLabelText('Mode'), { target: { value: 'read_only' } });
     const presets = within(within(dialog).getByRole('group', { name: 'Duration' })).getAllByRole('button');

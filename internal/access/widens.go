@@ -91,6 +91,45 @@ func Widens(system string, prev, next json.RawMessage) (bool, error) {
 	case MCPProfile:
 		p, ok := pv.(MCPProfile)
 		return widensMCP(n, p, ok), nil
+	case SaaSProfile:
+		p, ok := pv.(SaaSProfile)
+		return widensSaaS(n, p, ok), nil
+	case NetSuiteProfile:
+		p, _ := pv.(NetSuiteProfile)
+		if rank(modeRank, n.Mode) > rank(modeRank, p.Mode) || (*n.SuiteQL && (p.SuiteQL == nil || !*p.SuiteQL)) {
+			return true, nil
+		}
+		// integrations: absent or ["*"] is every tenant.
+		if p.Integrations != nil && !slices.Contains(p.Integrations, "*") {
+			if n.Integrations == nil || slices.Contains(n.Integrations, "*") {
+				return true, nil
+			}
+			for _, t := range n.Integrations {
+				if !slices.Contains(p.Integrations, t) {
+					return true, nil
+				}
+			}
+		}
+		// quickstart_tools: absent or ["*"] is every tool.
+		if prevRestricted := p.QuickStartTools != nil && !slices.Contains(p.QuickStartTools, "*"); prevRestricted {
+			if n.QuickStartTools == nil || slices.Contains(n.QuickStartTools, "*") {
+				return true, nil
+			}
+			for _, t := range n.QuickStartTools {
+				if !slices.Contains(p.QuickStartTools, t) {
+					return true, nil
+				}
+			}
+		}
+		if slices.Contains(p.RecordTypes, "*") {
+			return false, nil
+		}
+		for _, t := range n.RecordTypes {
+			if !slices.Contains(p.RecordTypes, t) {
+				return true, nil
+			}
+		}
+		return false, nil
 	}
 	return true, invalid("unknown system %q", system)
 }

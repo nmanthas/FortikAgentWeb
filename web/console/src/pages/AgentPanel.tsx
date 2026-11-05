@@ -3,6 +3,7 @@
 
 import { useState } from 'react';
 import { getAgent, getAgentStats, issueToken, listActions, listHeld, revokeTokens, setLevel } from '../api/endpoints';
+import { setAgentEnforcement, type EnforcementMode } from '../api/phase6';
 import { LEVELS } from '../api/normalize';
 import type { ActionClass, ActionRow, AgentDetail, AgentStats, HeldAction, Level } from '../api/types';
 import { useMe } from '../App';
@@ -205,7 +206,7 @@ function OverviewTab({ d }: { d: AgentDetail }) {
                   <strong>
                     {x.system} {x.verb}
                   </strong>
-                  <DecisionChip decision={x.decision} />
+                  <DecisionChip decision={x.decision} observed={x.observed} />
                   {x.ruleId && <span className="rule">{x.ruleId}</span>}
                   {x.failClosed && <span className="chip red">fail-closed</span>}
                 </div>
@@ -262,6 +263,8 @@ function LevelTab({ d, onChanged }: { d: AgentDetail; onChanged: () => void }) {
           also revokes the agent&apos;s live credentials.
         </p>
       </div>
+
+      <EnforcementCard agentId={agent.agentId} enforcement={agent.enforcement} effective={agent.effectiveEnforcement} onChanged={onChanged} />
 
       <div className="card card-pad">
         <div className="section-title">
@@ -482,5 +485,55 @@ function TokensTab({ d, onChanged }: { d: AgentDetail; onChanged: () => void }) 
         />
       )}
     </>
+  );
+}
+
+// --- Enforcement (Phase 6 observe mode) ----------------------------------------------
+
+export function EnforcementCard({ agentId, enforcement, effective, onChanged }: { agentId: string; enforcement?: string; effective?: string; onChanged: () => void }) {
+  const me = useMe();
+  const toast = useToast();
+  const [mode, setMode] = useState<EnforcementMode>((enforcement as EnforcementMode) ?? 'default');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  if (!enforcement) return null; // server without observe mode
+  const canWrite = hasRole(me, 'security');
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await setAgentEnforcement(agentId, mode, reason.trim());
+      toast({ tone: r.effective === 'observe' ? 'amber' : 'info', title: `${agentId}: ${r.effective === 'observe' ? 'observe mode (recorded, not enforced)' : 'enforced'}` });
+      setReason('');
+      onChanged();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card card-pad" data-testid="enforcement-card">
+      <div className="section-title">Enforcement</div>
+      <p className="help">
+        Now: <strong>{effective === 'observe' ? 'observe mode' : 'enforced'}</strong>
+        {enforcement === 'default' ? ' (deployment default)' : ' (set for this agent)'}. In observe mode Fortik records what it would hold, deny or
+        reduce and does not enforce it; unknown actions, fail-closed outcomes and levels set by people are still enforced.
+      </p>
+      <div className="row">
+        <select className="select" style={{ width: 220 }} aria-label="Enforcement mode" value={mode} disabled={!canWrite} onChange={(e) => setMode(e.target.value as EnforcementMode)}>
+          <option value="default">Deployment default</option>
+          <option value="observe">Observe (record only)</option>
+          <option value="enforce">Enforce</option>
+        </select>
+        <input className="input" style={{ width: 240 }} placeholder="Reason" aria-label="Enforcement reason" value={reason} disabled={!canWrite} onChange={(e) => setReason(e.target.value)} />
+        <button className="btn" disabled={!canWrite || busy || !reason.trim() || mode === enforcement} onClick={() => void save()}>
+          {busy && <span className="spinner" />} Apply
+        </button>
+      </div>
+      {!canWrite && <p className="help">Changing the enforcement mode requires the security role.</p>}
+      <ErrorBox error={error} />
+    </div>
   );
 }

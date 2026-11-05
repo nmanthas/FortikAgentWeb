@@ -31,6 +31,7 @@ import (
 	"fortik/internal/decide"
 	"fortik/internal/secrets"
 	"fortik/internal/shadow"
+	"fortik/internal/tlsx"
 	"fortik/internal/undo"
 )
 
@@ -119,12 +120,14 @@ func New(cfg config.PGProxyConfig, undoCfg config.UndoConfig, sec secrets.Provid
 	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
 		return nil, errors.New("pgproxy: tls_cert_file and tls_key_file must be set together")
 	}
-	if cfg.TLSCertFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("pgproxy: load TLS key pair: %w", err)
-		}
-		s.tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	tc, err := tlsx.Server(config.TLSConfig{CertFile: cfg.TLSCertFile, KeyFile: cfg.TLSKeyFile,
+		ClientCAFile: cfg.TLSClientCAFile, ClientAuth: cfg.TLSClientAuth})
+	if err != nil {
+		return nil, fmt.Errorf("pgproxy: %w", err)
+	}
+	s.tlsCfg = tc
+	if cfg.TLSRequired && tc == nil {
+		return nil, errors.New("pgproxy: tls_required needs tls_cert_file and tls_key_file")
 	}
 	return s, nil
 }
@@ -306,6 +309,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		}
 	}
 
+	if s.cfg.TLSRequired {
+		if _, isTLS := conn.(*tls.Conn); !isTLS {
+			_ = writeMsgs(conn, fatal("28000", "fortik: TLS is required (connect with sslmode=require or stronger)"))
+			return
+		}
+	}
 	params := startup.Parameters
 	var unrecognized []string
 	for k := range params {

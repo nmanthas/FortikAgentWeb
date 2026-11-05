@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ type NATSOptions struct {
 	MaxMsgs    int64         // retention cap (default 100000)
 	Duplicates time.Duration // Nats-Msg-Id dedupe window (default 2m)
 	Log        *slog.Logger
+	TLS        *tls.Config // TLS / mutual TLS to the server (nil = per URL scheme)
 }
 
 // NATSBus publishes to JetStream stream FORTIK, subject
@@ -71,7 +73,11 @@ func NewNATSBus(ctx context.Context, url string, o NATSOptions) (*NATSBus, error
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
-	nc, err := nats.Connect(url, nats.Name("fortik"), nats.MaxReconnects(-1), nats.ReconnectWait(time.Second))
+	nopts := []nats.Option{nats.Name("fortik"), nats.MaxReconnects(-1), nats.ReconnectWait(time.Second)}
+	if o.TLS != nil {
+		nopts = append(nopts, nats.Secure(o.TLS))
+	}
+	nc, err := nats.Connect(url, nopts...)
 	if err != nil {
 		return nil, fmt.Errorf("events: connect nats: %w", err)
 	}

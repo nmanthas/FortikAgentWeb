@@ -10,14 +10,24 @@ import (
 
 func TestSchemasMatchDesign(t *testing.T) {
 	want := map[string][]string{
-		SystemGoogle:       {"primary_domain*", "internal_domains", "test_user*", "admin_user", "service_account_json*!"},
-		SystemGitHub:       {"api_base_url", "app_id*", "installation_id*", "private_key_pem*!"},
-		SystemAWS:          {"region*", "role_arn*", "sts_endpoint", "iam_endpoint", "access_key_id*!", "secret_access_key*!", "external_id!"},
-		SystemPostgres:     {"host*", "port", "database*", "sslmode", "environment*", "admin_user*", "read_role*", "write_role*", "admin_password*!"},
-		SystemTemporal:     {"host_port*", "namespace", "tls", "api_key!"},
-		SystemCelery:       {"queues", "redis_url*!"},
-		SystemQueueWebhook: {"url*", "secret*!"},
-		SystemMemory:       {"host*", "port", "database*", "sslmode", "dimension", "admin_user*", "admin_password*!"},
+		SystemGoogle:             {"primary_domain*", "internal_domains", "test_user*", "admin_user", "service_account_json*!"},
+		SystemGitHub:             {"api_base_url", "app_id*", "installation_id*", "private_key_pem*!"},
+		SystemAWS:                {"region*", "role_arn*", "sts_endpoint", "iam_endpoint", "access_key_id*!", "secret_access_key*!", "external_id!"},
+		SystemPostgres:           {"host*", "port", "database*", "sslmode", "environment*", "admin_user*", "read_role*", "write_role*", "admin_password*!"},
+		SystemTemporal:           {"host_port*", "namespace", "tls", "api_key!"},
+		SystemCelery:             {"queues", "redis_url*!"},
+		SystemQueueWebhook:       {"url*", "secret*!"},
+		SystemMemory:             {"host*", "port", "database*", "sslmode", "dimension", "admin_user*", "admin_password*!"},
+		SystemNotifySlack:        {"webhook_url*!", "min_severity", "kinds", "console_url"},
+		SystemNetSuite:           {"account_id*", "client_id*", "certificate_id*", "algorithm", "scope", "agent_map", "activity_query", "api_base", "private_key_pem*!"},
+		SystemNetSuiteQuickStart: {"name", "tenant_label*", "endpoint_url", "transport", "auth_type", "token_expires_on", "personal_access_token*!"},
+		SystemNetSuiteMCP:        {"account_id*", "client_id*", "redirect_uri", "scope", "tools_path", "api_base", "oauth_tokens!"},
+		SystemSalesforce:         {"instance_url*", "auth_flow", "client_id*", "username", "audience", "api_version", "client_secret!", "private_key_pem!"},
+		SystemSalesforceMCP:      {"endpoint_url*", "instance_url", "auth_type", "client_id", "scope", "redirect_uri", "client_secret!", "access_token!", "oauth_tokens!"},
+		SystemServiceNow:         {"instance_url*", "auth_type", "username", "client_id", "test_tables", "password!", "client_secret!"},
+		SystemServiceNowMCP:      {"endpoint_url*", "auth_type", "client_id", "scope", "redirect_uri", "client_secret!", "access_token!", "oauth_tokens!"},
+		SystemSAP:                {"product", "api_base_url*", "auth_type", "username", "token_url", "client_id", "scope", "sap_client", "services", "password!", "client_secret!"},
+		SystemSAPMCP:             {"endpoint_url*", "authorize_url", "token_url", "revoke_url", "auth_type", "client_id", "scope", "redirect_uri", "client_secret!", "access_token!", "oauth_tokens!"},
 	}
 	got := Schemas()
 	if len(got) != len(want) {
@@ -305,5 +315,31 @@ func TestMemoryKeysAndValidation(t *testing.T) {
 	}
 	if err := configValidators["memory.dimension"](int64(1536)); err != nil {
 		t.Errorf("dimension 1536: %v", err)
+	}
+}
+
+// notify_slack: the webhook URL is a secret validated as an https URL; kinds
+// and the console URL are checked when present.
+func TestNotifySlackValidation(t *testing.T) {
+	ok, err := ParseKey("notify_slack")
+	if err != nil || ok != SystemNotifySlack {
+		t.Fatalf("key: %q %v", ok, err)
+	}
+	v := secretValidators["notify_slack.webhook_url"]
+	if s, err := v("  https://hooks.slack.com/services/T0/B0/XYZ  "); err != nil || s != "https://hooks.slack.com/services/T0/B0/XYZ" {
+		t.Fatalf("valid URL: %q %v", s, err)
+	}
+	for _, bad := range []string{"http://hooks.slack.com/x", "https://user:pw@hooks.slack.com/x", "https://hooks.slack.com/x?token=1", "not a url"} {
+		if _, err := v(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		} else if strings.Contains(err.Error(), "hooks.slack.com") {
+			t.Errorf("the error echoes the secret: %v", err)
+		}
+	}
+	if err := configValidators["notify_slack.kinds"]([]string{"override_restored", "Bad Kind"}); err == nil {
+		t.Error("bad kind accepted")
+	}
+	if err := configValidators["notify_slack.console_url"](""); err != nil {
+		t.Errorf("empty console URL: %v", err)
 	}
 }

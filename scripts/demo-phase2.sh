@@ -46,7 +46,7 @@ as() {
 }
 code() { cat "$TMP/code"; }
 agent_sql() { # agent token db sql
-  PGPASSWORD="$2" "$PGBIN/psql" -h 127.0.0.1 -p 6432 -U "$1" -d "$3" -X -A -t -v ON_ERROR_STOP=1 -c "$4" 2>&1
+  PGPASSWORD="$2" "$PGBIN/psql" -h 127.0.0.1 -p "${FORTIK_PROXY_PORT:-6432}" -U "$1" -d "$3" -X -A -t -v ON_ERROR_STOP=1 -c "$4" 2>&1
 }
 upstream() { "$PGBIN/psql" -h 127.0.0.1 -p 55432 -U postgres -d "$1" -X -A -t -c "$2"; }
 

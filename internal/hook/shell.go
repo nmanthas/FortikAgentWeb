@@ -81,7 +81,11 @@ type ShellResult struct {
 	SensitiveWrites []string
 	SensitiveKinds  []string // kinds of SensitiveWrites (see Kind* constants)
 	SensitiveReads  []string
-	Fingerprint     string
+	// Reaches lists the other Fortik systems the command talks to (github for
+	// gh and git remote operations, aws for the AWS CLI). Their timed
+	// suspensions apply to the shell action too; it can only add restrictions.
+	Reaches     []string
+	Fingerprint string
 
 	envDump     bool // env/printenv output (secrets in the environment)
 	uploadFiles bool // an upload's source is a credential file
@@ -117,6 +121,7 @@ func (r ShellResult) Target(cwd string) map[string]any {
 		"sensitive_writes": nonNilStrings(r.SensitiveWrites),
 		"sensitive_kinds":  nonNilStrings(r.SensitiveKinds),
 		"sensitive_reads":  nonNilStrings(r.SensitiveReads),
+		"reaches":          nonNilStrings(r.Reaches),
 	}
 	git := make([]any, 0, len(r.Git))
 	for _, g := range r.Git {
@@ -795,6 +800,7 @@ func (c *classifier) verb(v action.Verb) {
 }
 
 func (c *classifier) op(tag string)    { addUnique(&c.res.Operations, tag) }
+func (c *classifier) reach(sys string) { addUnique(&c.res.Reaches, sys) }
 func (c *classifier) cmdName(n string) { addUnique(&c.res.Commands, n) }
 func (c *classifier) dyn(reason string) {
 	c.res.Dynamic = true

@@ -1,7 +1,7 @@
 # Fortik developer entry points. `make ci` is what CI runs.
 export FORTIK_TEST_PG_URL ?= postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable
 
-.PHONY: build dev-up serve test test-race policy-test policy-fmt vet bench demo ci clean
+.PHONY: build dev-up serve test test-race policy-test policy-fmt vet bench demo ci clean replay
 
 build:
 	go build -o bin/fortik ./cmd/fortik
@@ -32,6 +32,12 @@ bench:
 
 demo:
 	./scripts/demo-phase1-accident.sh
+
+# Policy regression gate: 10,000 recorded inputs must keep their results
+# (also run by go test ./internal/replay). After a reviewed policy change:
+# go run ./cmd/fortik replay update
+replay:
+	go run ./cmd/fortik replay run
 
 ci: vet policy-fmt policy-test test-race
 

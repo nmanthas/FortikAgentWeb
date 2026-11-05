@@ -283,23 +283,39 @@ func (o *Observer) open(ctx context.Context, tx pgx.Tx, out *decide.Outcome, att
 		}
 		task = s
 	}
+	own, err := ParseTaskScope(a.Target["task_scope"])
+	if err != nil {
+		return fmt.Errorf("allowed DELEGATE with %w", err)
+	}
 	lineage := []string{a.AgentID}
 	depth := 1
 	parent := ""
+	corr := a.ActionID
+	scope := own
 	if att != nil && att.Present && att.TokenError == "" && len(att.Lineage) > 0 {
 		lineage = slices.Clone(att.Lineage)
 		depth = att.Depth + 1
 		parent = att.DelegationID
+		if att.CorrelationID != "" {
+			corr = att.CorrelationID
+		}
+		// The delegator's own task scopes bound what it may hand on: the
+		// child's scope is their intersection with the new one (never wider).
+		for i := range att.TaskScopes {
+			scope = Intersect(&att.TaskScopes[i], scope)
+		}
 	}
 	hop, tok, err := o.store.OpenTx(ctx, tx, Hop{
-		ParentID: parent,
-		From:     a.AgentID,
-		To:       to,
-		Chain:    append(lineage, to),
-		Depth:    depth,
-		TaskID:   task,
-		Channel:  channel,
-		ActionID: a.ActionID,
+		ParentID:      parent,
+		From:          a.AgentID,
+		To:            to,
+		Chain:         append(lineage, to),
+		Depth:         depth,
+		TaskID:        task,
+		Scope:         scope,
+		CorrelationID: corr,
+		Channel:       channel,
+		ActionID:      a.ActionID,
 	}, o.actor)
 	if err != nil {
 		return fmt.Errorf("record delegation hop: %w", err)

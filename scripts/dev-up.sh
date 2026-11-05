@@ -147,29 +147,7 @@ echo "==> migrations"
 ( cd "$ROOT" && go build -o bin/fortik ./cmd/fortik )
 FORTIK_DATABASE_URL="postgres://fortik_owner@127.0.0.1:$PORT/fortik?sslmode=disable" \
   "$ROOT/bin/fortik" migrate -config "$ROOT/configs/fortik.dev.yaml"
-"${PSQL[@]}" -d fortik <<'SQL'
-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM fortik_app;
-GRANT USAGE ON SCHEMA public TO fortik_app;
-GRANT SELECT, INSERT, UPDATE ON agents, actions, held_actions, undo_handles TO fortik_app;
-GRANT SELECT, INSERT ON diary, diary_roots TO fortik_app;          -- append-only: no UPDATE/DELETE
-GRANT SELECT, UPDATE ON diary_head TO fortik_app;
-GRANT SELECT ON schema_migrations TO fortik_app;
--- Phase 2
-GRANT SELECT, INSERT ON access_profiles TO fortik_app;              -- append-only versions
-GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO fortik_app;
-GRANT SELECT, INSERT, UPDATE ON credential_issuances, delayed_sends TO fortik_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON console_sessions TO fortik_app;
--- Phase 3
-GRANT SELECT, INSERT, UPDATE ON delegations, instances, alerts, access_overrides, approval_grants TO fortik_app;
-GRANT SELECT, INSERT, UPDATE ON agent_types, spawn_stats TO fortik_app;
-GRANT SELECT, INSERT ON held_approvals TO fortik_app;
-GRANT UPDATE ON held_actions TO fortik_app;
--- Phase 4
-GRANT SELECT, INSERT, UPDATE ON memory_access, memory_snapshots, containment_ops TO fortik_app;
--- Phase 5
-GRANT SELECT, INSERT, UPDATE ON swarms, swarm_members, swarm_breakers, edge_rollup_state, shadow_findings TO fortik_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON swarm_release_votes, edges, baseline_hourly, edge_links TO fortik_app;
-SQL
+sed 's/{{app}}/fortik_app/g' "$ROOT/migrations/app_grants.sql.tmpl" | "${PSQL[@]}" -d fortik
 
 # --- 5. simulated customer databases (seeded) -----------------------------------
 seed_customer_db() {
@@ -208,6 +186,11 @@ seed_customer_db acme_staging 2000 2000
 echo "==> encrypted secret store (.dev/secrets-enc)"
 # Seed only: once a secret exists it is managed by Fortik (the console/API
 # rotates and revokes agent tokens), so a re-run must never overwrite it.
+# Phase 6: the dev connector broker's upstream is a local fake (scripts/fakes);
+# this is the fake's client secret, not a real one.
+printf 'local-fake-upstream-secret' > "$DEV/secrets/connectors_google_client_secret"
+chmod 600 "$DEV/secrets/connectors_google_client_secret"
+"$ROOT/bin/fortik" secrets put -if-absent -config "$ROOT/configs/fortik.dev.yaml" -name connectors/google_client_secret < "$DEV/secrets/connectors_google_client_secret"
 for n in api_tokens agent_tokens diary_signing_key; do
   "$ROOT/bin/fortik" secrets put -if-absent -config "$ROOT/configs/fortik.dev.yaml" -name "$n" < "$DEV/secrets/$n"
 done

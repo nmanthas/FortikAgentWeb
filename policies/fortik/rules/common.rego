@@ -63,7 +63,7 @@ findings contains {
 
 # Systems that have a dedicated rule set. Everything else that is a known
 # system but has no rules yet must not silently default to green.
-rule_systems := {"postgres", "gmail", "drive", "github", "aws", "shell", "files", "http", "mcp", "a2a", "agents", "memory"}
+rule_systems := {"postgres", "gmail", "drive", "github", "aws", "shell", "files", "http", "mcp", "a2a", "agents", "memory", "connector", "netsuite", "salesforce", "servicenow", "sap"}
 
 # Systems whose rule sets cover only some verbs/operations (Phase 3). For
 # these, POL-005 still holds every non-READ action that `covered` does not

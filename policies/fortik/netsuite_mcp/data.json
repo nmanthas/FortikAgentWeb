@@ -1,0 +1,5 @@
+{
+  "mapping_version": "2026-10-27.1",
+  "tools": {},
+  "_evidence": "Tool mapping for a full NetSuite account's AI Connector Service (connection type netsuite_mcp). Empty on purpose: its tools come from the SuiteApps and customization projects installed in each account (e.g. the MCP Standard Tools SuiteApp), and no account was available to read their names and argument schemas. Every tool is refused (POL-002) and none is offered to agents until it is added here with its verb and operation, after reading the account's tools/list (console > Integrations > NetSuite > MCP > View tools)."
+}

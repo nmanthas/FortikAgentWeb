@@ -22,6 +22,7 @@ import { AgentsPage } from './pages/Agents';
 import { CommandCenterPage } from './pages/CommandCenter';
 import { TeamsPage } from './pages/Teams';
 import { UndoPage } from './pages/Undo';
+import { ConnectorsPage } from './pages/Connectors';
 import { IntegrationsPage } from './pages/Integrations';
 import { Login } from './pages/Login';
 import { ActionDetailPage } from './pages/ActionDetail';
@@ -115,6 +116,7 @@ const TITLES: [string, string][] = [
   ['/approvals', 'Approval queue'],
   ['/alerts', 'Alerts'],
   ['/undo', 'Undo'],
+  ['/connectors', 'Copilot connectors'],
   ['/integrations', 'Integrations'],
   ['/settings', 'Settings'],
 ];
@@ -140,6 +142,7 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/teams" element={<TeamsPage />} />
         <Route path="/undo" element={<UndoPage />} />
+        <Route path="/connectors" element={<ConnectorsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

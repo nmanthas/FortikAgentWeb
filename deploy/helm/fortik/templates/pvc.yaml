@@ -1,0 +1,29 @@
+{{- if and (eq .Values.config.secrets.provider "encfile") .Values.secretStore.encfilePersistence }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "fortik.fullname" . }}-secrets
+  labels: {{- include "fortik.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep   # the secret store outlives an uninstall
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: {{ .Values.secretStore.size }}}}
+  {{- with .Values.secretStore.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+{{- if .Values.spool.persistence }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "fortik.fullname" . }}-spool
+  labels: {{- include "fortik.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: {{ .Values.spool.size }}}}
+  {{- with .Values.spool.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

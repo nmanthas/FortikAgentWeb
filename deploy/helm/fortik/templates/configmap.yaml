@@ -1,0 +1,9 @@
+{{- include "fortik.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fortik.fullname" . }}
+  labels: {{- include "fortik.labels" . | nindent 4 }}
+data:
+  fortik.yaml: |
+{{ toYaml .Values.config | indent 4 }}

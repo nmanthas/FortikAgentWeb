@@ -29,6 +29,14 @@ var gitKnown = set("add", "commit", "checkout", "switch", "merge", "rebase", "pu
 	"commit-tree", "pack-refs", "repack", "verify-commit", "verify-tag", "var", "check-attr", "check-ref-format",
 	"interpret-trailers", "rerere", "show-branch", "column", "stripspace", "mailinfo", "mailsplit", "credential-cache")
 
+// gitRemote: sub-commands that talk to a remote (GitHub for the company's
+// repositories), so a GitHub suspension covers them. A remote that is not
+// GitHub is treated the same way: stricter, never looser.
+var gitRemote = set("push", "send-pack", "fetch", "pull", "clone", "ls-remote", "submodule", "lfs", "remote", "request-pull")
+
+// ghLocal: GitHub CLI sub-commands that do not call GitHub.
+var ghLocal = set("help", "version", "--version", "completion", "alias", "config")
+
 // gitMaxAlias bounds alias expansion (aliases may refer to aliases).
 const gitMaxAlias = 4
 
@@ -107,6 +115,9 @@ func (c *classifier) git(args []arg, ctx callCtx, depth int) flow {
 		}
 		exp = append(exp, sargs...)
 		return c.git(exp, ctx, depth+1)
+	}
+	if gitRemote[sub] {
+		c.reach("github")
 	}
 	switch sub {
 	case "push", "send-pack":
@@ -273,6 +284,9 @@ func ghCmd(c *classifier, _ string, args []arg, _ callCtx) flow {
 			c.verb(action.VerbExecute)
 			return flow{}
 		}
+	}
+	if !ghLocal[ops[0].val] {
+		c.reach("github")
 	}
 	key := ops[0].val
 	if len(ops) > 1 {

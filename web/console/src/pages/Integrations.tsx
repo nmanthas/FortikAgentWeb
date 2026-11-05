@@ -1,14 +1,20 @@
-// Integrations screen: a card per system (Google Workspace, GitHub, AWS, the
-// Phase 4 queue systems) and per instance of a multi-instance system (Postgres
-// upstreams, memory stores), with status, last test and last error; the
-// Configure drawer is rendered from GET /v1/integrations/schema.
+// Integrations screen. NetSuite, Salesforce, ServiceNow and SAP have one card
+// per tenant with a "Connection method" dropdown (REST API or MCP Server)
+// that decides which method's form is shown, saved and tested
+// (GET /v1/app-integrations; components/ProviderCard). Every other system has
+// a card per system (Google Workspace, GitHub, AWS, the Phase 4 queue
+// systems) or per instance (Postgres upstreams, memory stores), configured in
+// a drawer rendered from GET /v1/integrations/schema.
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { listApps, tenantsOf, UNIFIED_PROVIDERS, type AppIntegrations, type ProviderInfo } from '../api/apps';
 import { deleteIntegration, getIntegrationSchemas, listIntegrations, testIntegration } from '../api/endpoints';
 import type { Integration, IntegrationSchema } from '../api/types';
 import { useMe } from '../App';
 import { IntegrationStatusChip } from '../components/Chips';
-import { IconBolt, IconBrain, IconClock, IconCloud, IconDatabase, IconGit, IconGlobe, IconMail, IconPlus, IconPlug } from '../components/Icons';
+import { AddTenantDialog, ProviderCard } from '../components/ProviderCard';
+import { QuickStartPanel } from '../components/QuickStartPanel';
+import { IconBell, IconBolt, IconBrain, IconClock, IconCloud, IconDatabase, IconGit, IconGlobe, IconMail, IconPlus, IconPlug } from '../components/Icons';
 import { useToast } from '../components/Toasts';
 import { errText, ErrorBox, Loading, Modal } from '../components/ui';
 import { fmtAgo, fmtTime } from '../lib/format';
@@ -21,12 +27,25 @@ import { IntegrationDrawer } from './IntegrationDrawer';
 interface PageData {
   schemas: IntegrationSchema[];
   integrations: Integration[];
+  /** null on a server without logical integrations (NetSuite then shows as plain cards). */
+  apps: AppIntegrations | null;
 }
 
 async function load(signal: AbortSignal): Promise<PageData> {
-  const [schemas, integrations] = await Promise.all([getIntegrationSchemas(signal), listIntegrations(signal)]);
+  const [schemas, integrations, apps] = await Promise.all([getIntegrationSchemas(signal), listIntegrations(signal), listApps(signal)]);
   schemas.sort((a, b) => order(a.system) - order(b.system));
-  return { schemas, integrations };
+  return { schemas, integrations, apps };
+}
+
+/** Reads (and removes) the result the OAuth callback appends to /integrations. */
+function takeOAuthResult(): { key: string; ok: boolean; error: string } | null {
+  const q = new URLSearchParams(window.location.search);
+  if (!q.has('oauth_ok') && !q.has('oauth_error')) return null;
+  const out = { key: q.get('oauth') ?? '', ok: q.get('oauth_ok') === '1', error: q.get('oauth_error') ?? '' };
+  for (const k of ['oauth', 'oauth_ok', 'oauth_error']) q.delete(k);
+  const rest = q.toString();
+  window.history.replaceState(null, '', window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash);
+  return out;
 }
 
 const LOGO: Record<string, { icon: ReactNode; bg: string; fg: string }> = {
@@ -38,6 +57,9 @@ const LOGO: Record<string, { icon: ReactNode; bg: string; fg: string }> = {
   temporal: { icon: <IconClock size={22} />, bg: '#f1f5f9', fg: '#0f172a' },
   celery: { icon: <IconBolt size={22} />, bg: '#ecfdf3', fg: '#16a34a' },
   queue_webhook: { icon: <IconGlobe size={22} />, bg: '#eff6ff', fg: '#2563eb' },
+  notify_slack: { icon: <IconBell size={22} />, bg: '#fdf2f8', fg: '#db2777' },
+  netsuite: { icon: <IconDatabase size={22} />, bg: '#f0fdf4', fg: '#15803d' },
+  netsuite_quickstart: { icon: <IconPlug size={22} />, bg: '#f0fdf4', fg: '#15803d' },
 };
 
 const FALLBACK_LOGO = { icon: <IconPlug size={22} />, bg: '#f1f5f9', fg: '#475569' };
@@ -56,7 +78,18 @@ export function IntegrationsPage() {
   const [adding, setAdding] = useState<IntegrationSchema | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [addingTenant, setAddingTenant] = useState<{ provider: ProviderInfo; environment?: string } | null>(null);
   const security = hasRole(me, 'security');
+
+  useEffect(() => {
+    const r = takeOAuthResult();
+    if (!r) return;
+    toast(
+      r.ok
+        ? { tone: 'green', title: `${r.key || 'NetSuite'}: authorized`, body: 'NetSuite issued tokens to Fortik; a connection check ran.' }
+        : { tone: 'red', title: `${r.key || 'NetSuite'}: authorization failed`, body: r.error },
+    );
+  }, [toast]);
 
   useLiveRefresh((e) => e.eventType.startsWith('integration.'), page.reload, 500);
 
@@ -75,12 +108,19 @@ export function IntegrationsPage() {
 
   if (page.error) return <ErrorBox error={page.error} onRetry={page.reload} />;
   if (!page.data) return <Loading />;
-  const { schemas, integrations } = page.data;
+  const { schemas, integrations, apps } = page.data;
   const byKey = new Map(integrations.map((i) => [i.key, i]));
-  const multiSchemas = schemas.filter((s) => s.multi);
+  const schemaMap = new Map(schemas.map((s) => [s.system, s]));
+  // Providers with one card per tenant and a connection method dropdown. On
+  // a server without logical integrations they fall back to plain cards.
+  const unified = (apps?.providers ?? []).filter((p) => UNIFIED_PROVIDERS.includes(p.provider));
+  const unifiedSystems = new Set(unified.flatMap((p) => p.environments.flatMap((e) => e.transports.map((t) => t.system))).filter(Boolean));
+  // The console never offers a connection type the server did not list.
+  const plainSchemas = schemas.filter((s) => !unifiedSystems.has(s.system) && s.system !== 'netsuite_mcp');
+  const multiSchemas = plainSchemas.filter((s) => s.multi);
 
   const cards: { key: string; schema: IntegrationSchema; title: string; current?: Integration }[] = [];
-  for (const s of schemas) {
+  for (const s of plainSchemas) {
     if (s.multi) {
       for (const i of integrations.filter((x) => x.system === s.system).sort((a, b) => a.key.localeCompare(b.key)))
         cards.push({ key: i.key, schema: s, title: integrationTitle(s, i.key), current: i });
@@ -103,6 +143,19 @@ export function IntegrationsPage() {
         </p>
       </div>
       <div className="int-grid">
+        {apps &&
+          unified.flatMap((p) =>
+            tenantsOf(apps, p.provider).map((a) => (
+              <ProviderCard
+                key={a.integrationId}
+                app={a}
+                schemas={schemaMap}
+                canEdit={security}
+                onChanged={page.reload}
+                onAddTenant={p.multiTenant ? (environment) => setAddingTenant({ provider: p, environment }) : undefined}
+              />
+            )),
+          )}
         {cards.map(({ key, schema, title, current }) => {
           const logo = LOGO[schema.system] ?? FALLBACK_LOGO;
           const status = current?.status ?? 'unconfigured';
@@ -131,6 +184,7 @@ export function IntegrationsPage() {
                 )}
                 {current?.lastError && <span className="err">Last error: {current.lastError}</span>}
               </div>
+              {schema.system === 'netsuite_quickstart' && <QuickStartPanel canRefresh={security} onChanged={page.reload} />}
               <div className="actions">
                 <button className="btn primary small" onClick={() => setEditing({ key, schema, isNew: !current })}>
                   {current ? (security ? 'Configure' : 'View') : 'Set up'}
@@ -199,9 +253,21 @@ export function IntegrationsPage() {
         <DeleteDialog
           integrationKey={deleting}
           onClose={() => setDeleting(null)}
-          onDeleted={() => {
-            toast({ tone: 'amber', title: `${deleting} deleted`, body: 'Its secrets were removed from the secret store.' });
+          onDeleted={(notes) => {
+            toast({ tone: 'amber', title: `${deleting} deleted`, body: ['Its secrets were removed from the secret store.', ...notes].join(' ') });
             setDeleting(null);
+            page.reload();
+          }}
+        />
+      )}
+      {addingTenant && (
+        <AddTenantDialog
+          provider={addingTenant.provider}
+          environment={addingTenant.environment}
+          existing={apps?.integrations.map((a) => a.integrationId) ?? []}
+          onClose={() => setAddingTenant(null)}
+          onCreated={() => {
+            setAddingTenant(null);
             page.reload();
           }}
         />
@@ -265,15 +331,14 @@ function AddInstanceDialog({
   );
 }
 
-function DeleteDialog({ integrationKey, onClose, onDeleted }: { integrationKey: string; onClose: () => void; onDeleted: () => void }) {
+function DeleteDialog({ integrationKey, onClose, onDeleted }: { integrationKey: string; onClose: () => void; onDeleted: (notes: string[]) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const del = async () => {
     setBusy(true);
     setError(null);
     try {
-      await deleteIntegration(integrationKey);
-      onDeleted();
+      onDeleted(await deleteIntegration(integrationKey));
     } catch (e) {
       setError(e);
       setBusy(false);
@@ -282,7 +347,11 @@ function DeleteDialog({ integrationKey, onClose, onDeleted }: { integrationKey: 
   return (
     <Modal
       title={`Delete ${integrationKey}?`}
-      description="Its settings and stored secrets are deleted. Every agent action on this system will be refused until it is configured again."
+      description={
+        integrationKey.startsWith('netsuite_mcp')
+          ? 'Fortik asks NetSuite to revoke its OAuth grant, then deletes the settings and tokens. Agent calls over this transport are refused until it is configured again; other transports of the tenant are not affected.'
+          : 'Its settings and stored secrets are deleted. Every agent action on this connection will be refused until it is configured again.'
+      }
       onClose={busy ? () => undefined : onClose}
       footer={
         <>

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"fortik/internal/delegation"
+	"fortik/internal/tlsx"
 )
 
 // ClientPath is the gateway path the client posts to.
@@ -150,6 +151,16 @@ func askFortik(stdin io.Reader, env func(string) string) (*Response, error) {
 		req.Header.Set(delegation.Header, v)
 	}
 	cl := &http.Client{Timeout: clientTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	// mTLS to the gateway (Phase 6): FORTIK_CA_FILE trusts a private CA;
+	// FORTIK_CLIENT_CERT / FORTIK_CLIENT_KEY present this machine's client
+	// certificate. Any problem with them blocks (fail closed).
+	if ca, crt, key := env("FORTIK_CA_FILE"), env("FORTIK_CLIENT_CERT"), env("FORTIK_CLIENT_KEY"); ca != "" || crt != "" || key != "" {
+		tc, err := tlsx.Client(ca, crt, key)
+		if err != nil {
+			return nil, errors.New("TLS settings unusable: " + err.Error())
+		}
+		cl.Transport = &http.Transport{TLSClientConfig: tc, Proxy: http.ProxyFromEnvironment}
+	}
 	res, err := cl.Do(req)
 	if err != nil {
 		var te interface{ Timeout() bool }

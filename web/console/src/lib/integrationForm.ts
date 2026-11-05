@@ -18,7 +18,7 @@ export interface IntegrationFormState {
 /** Postgres upstream names (the part after "postgres:"); matches the server. */
 export const POSTGRES_NAME = /^[a-z][a-z0-9_]{0,62}$/;
 
-export const SYSTEM_ORDER = ['google_workspace', 'github', 'aws', 'postgres', 'memory', 'temporal', 'celery', 'queue_webhook'];
+export const SYSTEM_ORDER = ['google_workspace', 'github', 'aws', 'postgres', 'memory', 'temporal', 'celery', 'queue_webhook', 'notify_slack', 'netsuite', 'netsuite_quickstart'];
 
 /** Instance names of multi-instance systems ("postgres:<name>", "memory:<name>"); same rule as the server. */
 export const INSTANCE_NAME = POSTGRES_NAME;
@@ -83,10 +83,39 @@ export function isSecretSet(current: Integration | undefined, key: string): bool
   return current?.secrets[key]?.set === true;
 }
 
+/** Readable names of select options the server sends as identifiers. */
+export const OPTION_LABELS: Record<string, string> = {
+  streamable_http: 'Streamable HTTP',
+  personal_access_token: 'Personal access token',
+  oauth_authorization_code: 'OAuth authorization code (a user signs in)',
+  oauth_client_credentials: 'OAuth client credentials',
+  bearer_token: 'Bearer token',
+  client_credentials: 'OAuth client credentials',
+  jwt_bearer: 'OAuth JWT bearer (certificate)',
+  basic: 'Basic (user name and password)',
+  s4hana_cloud_public: 'SAP S/4HANA Cloud Public Edition',
+  s4hana_private_or_onprem: 'SAP S/4HANA Private Edition or on premise',
+  other_odata: 'Another SAP OData API',
+  all: 'All tools in the account',
+  'suiteapp/com.netsuite.mcpstandardtools': 'MCP Standard Tools SuiteApp only',
+};
+
+export const optionLabel = (o: string) => OPTION_LABELS[o] ?? o;
+
+/** Whether a field applies to the current form values (its show_when condition). */
+export function fieldVisible(f: SchemaField, values: Record<string, string | boolean>): boolean {
+  if (!f.showWhen) return true;
+  return Object.entries(f.showWhen).every(([k, allowed]) => {
+    const v = values[k];
+    return typeof v === 'string' && allowed.includes(v);
+  });
+}
+
 /** Client-side checks for quick feedback (the server validates everything again). */
 export function formProblems(schema: IntegrationSchema, st: IntegrationFormState, current: Integration | undefined): string[] {
   const out: string[] = [];
   for (const f of schema.fields) {
+    if (!fieldVisible(f, st.values)) continue;
     if (f.secret) {
       const s = st.secrets[f.key] ?? { mode: 'keep' };
       const willBeSet = s.mode === 'keep' ? isSecretSet(current, f.key) : s.mode === 'replace' ? s.value.trim() !== '' : false;
@@ -157,6 +186,11 @@ export const SYSTEM_BLURB: Record<string, string> = {
   temporal: 'Pause, resume or cancel an agent’s workflows (tagged with the FortikAgentId search attribute) when it is suspended or killed.',
   celery: 'Hold, release or revoke an agent’s Celery tasks (header fortik_agent_id) on the Redis broker when it is suspended or killed.',
   queue_webhook: 'Your own job system: Fortik POSTs signed pause/resume/cancel requests for an agent and treats only a 2xx answer as done.',
+  netsuite:
+    'Agents call NetSuite through Fortik: every record read, change and SuiteQL query is decided first, updates are snapshotted for undo, and changes made outside Fortik are read from system notes afterwards.',
+  netsuite_quickstart:
+    'Agents use QuickStart’s MCP tools through Fortik (gateway /mcp/netsuite_quickstart, with their Fortik token): every call is decided first — reads under the NetSuite access profile, writes held for approval and retried once, deletes and protected preferences refused — while the personal access token stays in Fortik.',
+  notify_slack: 'Posts security alerts to a Slack channel, naming the agent and its owner, e.g. when a timed suspension is restored or a bypass is blocked.',
 };
 
 export const SYSTEM_STEPS: Record<string, string[]> = {
@@ -194,6 +228,22 @@ export const SYSTEM_STEPS: Record<string, string[]> = {
     'Expose an HTTPS endpoint that pauses, resumes or cancels an agent’s jobs and verifies X-Fortik-Signature (HMAC-SHA256).',
     'Enter the URL and a shared secret.',
     'Save, then Test connection.',
+  ],
+  netsuite: [
+    'In NetSuite, create an integration record for Fortik with the client credentials (machine to machine) grant and REST web services.',
+    'Upload Fortik’s public certificate in the OAuth 2.0 client credentials (M2M) setup, mapped to that integration, an entity and a least-privilege role.',
+    'Enter the account ID, client ID, certificate ID and private key, map each agent to its NetSuite entity, save, then Test connection.',
+  ],
+  netsuite_quickstart: [
+    'In QuickStart: Menu > Administration > QuickStart settings > General > select MCP Server Enabled (needs permission to update company preferences).',
+    'QuickStart settings > Personal access tokens: create a token named Fortik with the default read-only scope, then Copy token (shown once; 30-day default expiry).',
+    'Enter a tenant label and the token (and its expiration date), keep the documented endpoint, save, then Test connection.',
+    'Give each agent a NetSuite access profile (mode read_only or read_write; optional quickstart_tools), then point its MCP client at the gateway’s /mcp/netsuite_quickstart with its Fortik agent token.',
+  ],
+  notify_slack: [
+    'In Slack, add an Incoming Webhook to the channel security and agent owners watch, and copy its URL.',
+    'Paste the URL (stored as a secret) and choose the minimum severity.',
+    'Save, then Test connection: a test message appears in the channel.',
   ],
   postgres: [
     'Create two NOLOGIN group roles holding read and read/write grants.',

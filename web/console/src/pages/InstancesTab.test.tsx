@@ -56,6 +56,7 @@ describe('InstancesTab', () => {
     expect(screen.getByText(/More copies are running than allowed/)).toBeTruthy();
     expect(screen.getAllByText('new host')).toHaveLength(1);
     expect(screen.getByText('POL-701: copy cap reached')).toBeTruthy();
+    expect(screen.getByTestId('refused-count').textContent).toBe('1 refused, no credentials');
     expect(screen.getAllByRole('row')).toHaveLength(11);
 
     fireEvent.click(screen.getByRole('button', { name: 'Pause extra copies of coder' }));
@@ -74,6 +75,7 @@ describe('InstancesTab', () => {
     installFakeApi({ 'GET /v1/agents/coder/instances': { agent_id: 'coder', copy_cap: 1, live: 2, instances: [inst(1), inst(2)] } });
     renderWithApp(<InstancesTab agent={agent} />, auditorMe);
     expect((await screen.findByTestId('instance-count')).textContent).toBe('2 of 1');
+    expect(screen.queryByTestId('refused-count')).toBeNull();
     expect((screen.getByRole('button', { name: 'Pause extra copies of coder' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/requires the security role or ownership/)).toBeTruthy();
   });

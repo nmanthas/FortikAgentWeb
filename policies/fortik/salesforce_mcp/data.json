@@ -1,0 +1,5 @@
+{
+  "mapping_version": "2026-10-28.1",
+  "tools": {},
+  "_evidence": "Tool mapping for Salesforce MCP connections (salesforce_mcp). Empty on purpose: the tools come from a Salesforce Hosted MCP server (its tools depend on the server chosen, e.g. sobject-reads, sobject-mutations, and on the org), and no live server was available to read their names and argument schemas. Every tool is refused (POL-002) and none is offered to agents until it is added here with its verb (READ, WRITE, DELETE, EXECUTE) and operation, after reading the server's tools/list (console > Integrations > Salesforce > MCP Server > View tools)."
+}

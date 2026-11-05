@@ -34,6 +34,7 @@ func registerCloud() {
 
 func awsCmd(c *classifier, _ string, args []arg, _ callCtx) flow {
 	c.op("aws")
+	c.reach("aws")
 	rest := parseOpts(args, awsGlobal).operands()
 	if len(rest) < 2 {
 		if len(rest) == 1 && rest[0].lit && rest[0].val == "configure" {

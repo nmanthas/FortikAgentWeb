@@ -19,6 +19,14 @@
 #   POL-027 recipients exceed max_recipients
 #   POL-028 http external egress outside the profile (Phase 3)
 #   POL-029 mcp server or tool not in the profile (Phase 3)
+#   POL-1007 netsuite record type (or SuiteQL table) outside record_types
+#   POL-1008 netsuite SuiteQL query while the profile's suiteql is false
+#   POL-1108 netsuite QuickStart MCP tool not in quickstart_tools
+#   POL-1010 netsuite, salesforce, servicenow or sap tenant (logical
+#            integration) not in integrations
+#   POL-1211 salesforce/servicenow/sap object (table, OData entity set) not
+#            in objects
+#   POL-1212 salesforce/servicenow/sap MCP tool not in mcp_tools
 #
 # Phase 3 systems (docs/PHASE3_DESIGN.md §1.5): a2a, http and mcp. No
 # profile denies (POL-020) like every other profiled system. The a2a
@@ -28,7 +36,13 @@
 # itself (a Claude Code Task subagent) is exempt: it grants nothing new.
 package fortik.access
 
-profiled_systems := {"gmail", "drive", "github", "aws", "postgres", "a2a", "http", "mcp"}
+profiled_systems := {"gmail", "drive", "github", "aws", "postgres", "a2a", "http", "mcp", "netsuite", "salesforce", "servicenow", "sap"}
+
+saas_systems := {"salesforce", "servicenow", "sap"}
+
+tenant_systems := {"netsuite", "salesforce", "servicenow", "sap"}
+
+system_titles := {"netsuite": "NetSuite", "salesforce": "Salesforce", "servicenow": "ServiceNow", "sap": "SAP"}
 
 act := input.action
 
@@ -170,13 +184,13 @@ denials contains {"rule_id": "POL-027", "reason": sprintf("%s: malformed recipie
 modes_ok := {"read_only", "read_write"}
 
 denials contains {"rule_id": "POL-020", "reason": sprintf("%s: mode is %v: no access", [prefix, pstr("mode")])} if {
-	act.system in {"drive", "aws"}
+	act.system in {"drive", "aws", "netsuite", "salesforce", "servicenow", "sap"}
 	profile
 	not pstr("mode") in modes_ok
 }
 
 denials contains {"rule_id": "POL-021", "reason": sprintf("%s: mode is read_only: %v refused", [prefix, verb])} if {
-	act.system in {"drive", "aws"}
+	act.system in {"drive", "aws", "netsuite", "salesforce", "servicenow", "sap"}
 	profile
 	pstr("mode") == "read_only"
 	verb != "READ"
@@ -492,4 +506,114 @@ ranked := sort([[d.rule_id, d.reason] | some d in denials])
 gate := {"rule_id": ranked[0][0], "reason": ranked[0][1]} if {
 	applies
 	count(ranked) > 0
+}
+
+# --- NetSuite (Milestone 1): record types and SuiteQL ---------------------------
+# Profile: {"mode":"none|read_only|read_write","record_types":["customer",...] | ["*"],"suiteql":true|false}
+# Mode is checked above (POL-020/021). Record types and SuiteQL tables are
+# lower-cased by the gateway. A query whose tables could not be identified
+# never fits a restricted profile (fail closed).
+
+ns_types := {lower(t) | some t in plist("record_types"); is_string(t)}
+
+ns_all_types if "*" in ns_types
+
+ns_op := object.get(tgt, "operation", "")
+
+ns_record_types contains lower(t) if {
+	some k in ["record_type", "to_record_type"]
+	t := object.get(tgt, k, "")
+	is_string(t)
+	t != ""
+}
+
+denials contains {"rule_id": "POL-1007", "reason": sprintf("%s: record type %v is not in record_types", [prefix, t])} if {
+	act.system == "netsuite"
+	profile
+	not ns_all_types
+	ns_op != "query"
+	some t in ns_record_types
+	not t in ns_types
+}
+
+denials contains {"rule_id": "POL-1007", "reason": sprintf("%s: SuiteQL table %v is not in record_types", [prefix, t])} if {
+	act.system == "netsuite"
+	profile
+	not ns_all_types
+	ns_op == "query"
+	some t in object.get(tgt, "query_tables", [])
+	not lower(t) in ns_types
+}
+
+denials contains {"rule_id": "POL-1007", "reason": sprintf("%s: the SuiteQL query's tables could not be identified, and record_types is restricted", [prefix])} if {
+	act.system == "netsuite"
+	profile
+	not ns_all_types
+	ns_op == "query"
+	count(object.get(tgt, "query_tables", [])) == 0
+}
+
+denials contains {"rule_id": "POL-1008", "reason": sprintf("%s: suiteql is not allowed", [prefix])} if {
+	act.system == "netsuite"
+	profile
+	ns_op == "query"
+	object.get(profile, "suiteql", false) != true
+}
+
+# --- NetSuite QuickStart MCP tools (QuickStart Milestone 2) -------------------
+# Profile key quickstart_tools: ["*"] or tool names; absent = every tool the
+# mode allows. Only for calls through the QuickStart MCP integration.
+
+denials contains {"rule_id": "POL-1108", "reason": sprintf("%s: QuickStart tool %v is not in quickstart_tools", [prefix, object.get(tgt, "tool", "")])} if {
+	act.system == "netsuite"
+	profile
+	object.get(tgt, "integration", "") == "netsuite_quickstart"
+	tools := object.get(profile, "quickstart_tools", null)
+	tools != null
+	not "*" in tools
+	object.get(tgt, "operation", "") != "list_tools"
+	not object.get(tgt, "tool", "") in tools
+}
+
+# --- NetSuite tenants (integration platform Milestone 1) -----------------------
+# Profile key integrations: ["*"] or logical integration ids (netsuite:acme);
+# absent = every tenant. Applies to every transport (REST and MCP): an action
+# names its tenant in target.integration_id. A restricted profile refuses an
+# action that names no tenant (fail closed).
+
+denials contains {"rule_id": "POL-1010", "reason": sprintf("%s: %s integration %v is not in integrations", [prefix, system_titles[act.system], object.get(tgt, "integration_id", "(none)")])} if {
+	act.system in tenant_systems
+	profile
+	ids := object.get(profile, "integrations", null)
+	ids != null
+	not "*" in ids
+	not object.get(tgt, "integration_id", "") in ids
+}
+
+# --- Salesforce, ServiceNow, SAP: objects and MCP tools ------------------------
+# Profile keys objects (["*"] or names, compared lower-case) and mcp_tools
+# (optional, ["*"] or names). A REST call under a restricted objects list
+# must name an object it allows; one that names none (e.g. a query whose
+# object could not be identified) is refused, except describe calls.
+
+saas_objects := {lower(o) | some o in plist("objects"); is_string(o)}
+
+denials contains {"rule_id": "POL-1211", "reason": sprintf("%s: object %v is not in objects", [prefix, object.get(tgt, "object", "(none)")])} if {
+	act.system in saas_systems
+	profile
+	not "*" in saas_objects
+	object.get(tgt, "transport", "") == "rest_api"
+	object.get(tgt, "operation", "") != "describe"
+	not lower(object.get(tgt, "object", "")) in saas_objects
+}
+
+denials contains {"rule_id": "POL-1212", "reason": sprintf("%s: MCP tool %v is not in mcp_tools", [prefix, object.get(tgt, "tool", "")])} if {
+	act.system in saas_systems
+	profile
+	object.get(tgt, "transport", "") == "mcp"
+	tools := object.get(profile, "mcp_tools", null)
+	tools != null
+	not "*" in tools
+	object.get(tgt, "operation", "") != "list_tools"
+	not object.get(tgt, "tool", "") in tools
 }

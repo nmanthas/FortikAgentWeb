@@ -136,7 +136,7 @@ say "(the swarm stays killed for the map section; the next run releases it)"
 bold "B. Attack (plan scenario 1): finance_agent_07 follows a hidden instruction"
 check "reads the email with the hidden instruction: $(decide '{"agent_id":"finance_agent_07","system":"gmail","verb":"READ","source":"app_gateway","target":{"endpoint":"gmail.users.messages.get","user_id":"me"}}')" true
 set +e
-PGPASSWORD=$FORTIK_AGENT_TOKEN_FINANCE_AGENT_07 "$PGBIN/psql" -h 127.0.0.1 -p 6432 -U finance_agent_07 -d acme_prod -Atc "SELECT id, name, email, phone FROM customers" > "$TMP/read" 2>&1
+PGPASSWORD=$FORTIK_AGENT_TOKEN_FINANCE_AGENT_07 "$PGBIN/psql" -h 127.0.0.1 -p "${FORTIK_PROXY_PORT:-6432}" -U finance_agent_07 -d acme_prod -Atc "SELECT id, name, email, phone FROM customers" > "$TMP/read" 2>&1
 set -e
 check "bulk read of 12,480 customer records through the real Postgres proxy is flagged yellow and held (POL-113)" 'grep -q "hold (yellow) by POL-113" "$TMP/read"'
 R="$(decide '{"agent_id":"finance_agent_07","system":"drive","verb":"EXPORT","source":"app_gateway","target":{"operation":"share","file_id":"customers_export.csv","share_type":"anyone","external":true}}')"

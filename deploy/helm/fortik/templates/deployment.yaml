@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fortik.fullname" . }}
+  labels: {{- include "fortik.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ if eq (int .Values.replicaCount) 1 }}Recreate{{ else }}RollingUpdate{{ end }}
+  selector:
+    matchLabels: {{- include "fortik.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "fortik.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "fortik.fullname" . }}
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: fortik
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "-config", "/etc/fortik/fortik.yaml"]
+          env: {{- include "fortik.env" . | nindent 12 }}
+          ports:
+            - {name: api, containerPort: 8443}
+            - {name: gateway, containerPort: 8090}
+            - {name: pgproxy, containerPort: 6432}
+            - {name: agentgw, containerPort: 9091}
+          securityContext: {{- include "fortik.securityContext" . | nindent 12 }}
+          readinessProbe:
+            exec: {command: ["/usr/local/bin/fortik", "healthz", "-url", "https://127.0.0.1:8443/healthz", "-ca", "/etc/fortik/tls/ca.crt"]}
+            periodSeconds: 10
+          livenessProbe:
+            exec: {command: ["/usr/local/bin/fortik", "healthz", "-url", "https://127.0.0.1:8443/healthz", "-ca", "/etc/fortik/tls/ca.crt"]}
+            periodSeconds: 20
+            failureThreshold: 6
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/fortik/fortik.yaml, subPath: fortik.yaml, readOnly: true}
+            - {name: tls, mountPath: /etc/fortik/tls, readOnly: true}
+            - {name: secrets, mountPath: /var/lib/fortik/secrets}
+            - {name: spool, mountPath: /var/lib/fortik/spool}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "fortik.fullname" . }}}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+            defaultMode: 0440
+            items:
+              - {key: tls.crt, path: server.crt}
+              - {key: tls.key, path: server.key}
+              - {key: ca.crt, path: ca.crt}
+        - name: secrets
+          {{- if and (eq .Values.config.secrets.provider "encfile") .Values.secretStore.encfilePersistence }}
+          persistentVolumeClaim: {claimName: {{ include "fortik.fullname" . }}-secrets}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: spool
+          {{- if .Values.spool.persistence }}
+          persistentVolumeClaim: {claimName: {{ include "fortik.fullname" . }}-spool}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 64Mi}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

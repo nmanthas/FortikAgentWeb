@@ -1,0 +1,10 @@
+.dev
+bin
+fortik
+web/console/node_modules
+spikes
+testdata
+deploy/compose/.env
+deploy/compose/tls
+deploy/compose/data
+*.pdf

@@ -1,0 +1,165 @@
+# Fortik configuration for the Docker Compose pilot (deploy/compose). No
+# secrets in this file: passwords come from the environment (.env, written by
+# init.sh), credentials from the encrypted secret store (./data/secrets, key
+# FORTIK_MASTER_KEY). See docs/DEPLOYMENT.md.
+database_url: postgres://fortik_app:${FORTIK_APP_PASSWORD}@postgres:5432/fortik?sslmode=disable
+log_level: info
+
+# Pilots start in observe mode: Fortik records what it would enforce, and
+# does not (unknown actions, fail-closed outcomes and levels set by people
+# are still enforced). Switch to enforce per agent from the console, then here.
+enforcement:
+  mode: ${FORTIK_ENFORCEMENT_MODE}
+
+api:
+  enabled: true
+  listen: 0.0.0.0:8443
+  tokens_secret: api_tokens
+  allowed_hosts: [localhost, 127.0.0.1, "${FORTIK_PUBLIC_HOST}"]
+  tls:
+    cert_file: /etc/fortik/tls/server.crt
+    key_file: /etc/fortik/tls/server.key
+
+policy:
+  dir: /etc/fortik/policies
+  hot_reload: false
+
+diary:
+  signing_key_secret: diary_signing_key
+
+secrets:
+  provider: encfile           # or: vault (vault_addr, VAULT_TOKEN)
+  dir: /var/lib/fortik/secrets
+
+fail:
+  green_read_allowlist: []
+  spool_dir: /var/lib/fortik/spool
+
+pgproxy:
+  enabled: true
+  listen: 0.0.0.0:6432
+  agent_tokens_secret: agent_tokens
+  pre_query_timeout: 3s
+  tls_cert_file: /etc/fortik/tls/server.crt
+  tls_key_file: /etc/fortik/tls/server.key
+  tls_client_ca_file: /etc/fortik/tls/ca.crt
+  tls_client_auth: require
+  tls_required: true
+  upstreams: {}               # added from the console (Integrations)
+  data_labels:
+    - match: public.customers
+      labels: [customer_pii]
+    - match: "*.payments"
+      labels: [financial]
+
+gateway:
+  enabled: true
+  listen: 0.0.0.0:8090
+  tls:
+    cert_file: /etc/fortik/tls/server.crt
+    key_file: /etc/fortik/tls/server.key
+    client_ca_file: /etc/fortik/tls/ca.crt
+    client_auth: require
+
+broker:
+  aws_session_ttl: 15m
+  postgres_session_ttl: 15m
+
+auth:
+  dev_login:
+    enabled: false            # never outside local development
+  # oidc:                     # SSO for the console (basic OIDC in the MVP)
+  #   issuer: https://login.example.com
+  #   client_id: fortik-console
+  #   client_secret_secret: oidc/client_secret
+  #   redirect_url: https://fortik.example.com/auth/callback
+  #   role_claim: groups
+  #   role_map: {fortik-security: [security, auditor], fortik-admins: [admin]}
+
+events:
+  provider: nats
+  url: nats://nats:4222
+
+counters:
+  provider: redis
+  redis_url: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+ladder:
+  yellow_holds_threshold: 3
+  yellow_window: 10m
+
+console:
+  enabled: true
+
+undo:
+  snapshot_retention: 720h
+  trash_retention: 168h
+
+delegation:
+  signing_key_secret: delegation/signing_key
+  token_ttl: 15m
+  max_depth: 5
+  bypass_origin_level: SUPERVISED
+
+population:
+  heartbeat_interval: 15s
+  stale_after: 45s
+  spike_cooldown: 5m
+
+approvals:
+  grant_ttl: 15m
+  allow_owner_approval: false
+  allow_token_pairs: false    # two API tokens never count as two people
+
+overrides:
+  sweep_interval: 5s
+
+agentgw:
+  enabled: true
+  listen: 0.0.0.0:9091
+  tls:
+    cert_file: /etc/fortik/tls/server.crt
+    key_file: /etc/fortik/tls/server.key
+    client_ca_file: /etc/fortik/tls/ca.crt
+    client_auth: require
+  internal_hosts: []          # your company's domains, e.g. [example.com, "*.corp.example.com"]
+
+hook:
+  proxy_hosts: ["${FORTIK_PUBLIC_HOST}:6432"]
+
+memory:
+  promotion_delay: 10m
+  promotion_poll: 30s
+  snapshot_every: 1h
+  snapshot_retention: 720h
+
+retention:
+  sweep_interval: 1h
+
+swarm:
+  breaker_n: 5
+  breaker_window: 10m
+  fanout_limit: 10
+  converge_n: 8
+  converge_window: 10m
+  sweep_interval: 15s
+
+map:
+  window: 5m
+  rollup_interval: 10s
+  retention: 720h
+  encoded_param_min: 256
+
+shadow:
+  sweep_interval: 15m
+  postgres_exclude_roles: [fortik_app, fortik_owner]
+
+baseline:
+  days: 14
+  sigma: 3
+  median_factor: 5
+  min_history_days: 3
+  min_count: 20
+
+connectors:
+  enabled: false              # SaaS copilot connector broker: see docs/DEPLOYMENT.md

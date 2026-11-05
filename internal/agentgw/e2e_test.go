@@ -402,6 +402,12 @@ func TestEndToEndAgentgateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if raceEnabled {
+		// The generator enforces the production budget (100-250 ms, fail
+		// closed); a race-instrumented callout needs more, so only this
+		// test's copy of the config is widened.
+		gen = bytes.ReplaceAll(gen, []byte("requestTimeout: 250ms"), []byte("requestTimeout: 5s"))
+	}
 	base := startAgentgateway(t, bin, gen, listen)
 
 	f.putProfile(t, "agent_a", "mcp", `{"servers":{"memory":["*"]}}`)
