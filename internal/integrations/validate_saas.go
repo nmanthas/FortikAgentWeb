@@ -61,6 +61,8 @@ func init() {
 	v["salesforce.username"] = optional(label)
 	v["salesforce.audience"] = optional(checkURL)
 	v["salesforce.api_version"] = func(x any) error { return match(sfAPIVersion, x, "a version such as 62.0") }
+	v["salesforce.agent_api_url"] = optional(checkURL)
+	v["salesforce.agent_client_id"] = optional(checkClientID)
 	v["servicenow.instance_url"] = func(x any) error { return checkURL(x.(string)) }
 	v["servicenow.username"] = optional(label)
 	v["servicenow.client_id"] = optional(checkClientID)

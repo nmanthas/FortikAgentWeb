@@ -93,6 +93,12 @@ var saasSchemas = []Schema{
 				Help: "Required for client_credentials. Stored only in Fortik's secret store; agents never receive Salesforce credentials."},
 			{Key: "private_key_pem", Label: "Private key (PEM)", Type: FieldTextarea, Secret: true, ShowWhen: showWhen("auth_flow", "jwt_bearer"),
 				Help: "Required for jwt_bearer: the RSA private key of the certificate uploaded to the app (PKCS#8 or PKCS#1)."},
+			{Key: "agent_api_url", Label: "Agent API URL (Agentforce)", Type: FieldText, Default: "https://api.salesforce.com",
+				Help: "Where Fortik calls the Agent API to talk to your Agentforce agents (agents use /gw/salesforce/einstein/ai-agent/v1/... or /mcp/agentforce/<tenant>). Keep https://api.salesforce.com unless Salesforce gives your org another host (e.g. api.gov.salesforce.com)."},
+			{Key: "agent_client_id", Label: "Agent API consumer key (optional)", Type: FieldText,
+				Help: "Leave empty to use the app above for the Agent API too. Otherwise the consumer key of a separate External Client App for the Agent API: Client Credentials Flow with a run-as user, scopes api, chatbot_api, sfap_api and refresh_token/offline_access, and JWT-based access tokens for named users. No connection on the agent is needed."},
+			{Key: "agent_client_secret", Label: "Agent API consumer secret", Type: FieldPassword, Secret: true,
+				Help: "Required with an Agent API consumer key. Stored only in Fortik's secret store."},
 		},
 	},
 	{

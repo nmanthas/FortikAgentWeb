@@ -232,6 +232,7 @@ export const HEALTH: Record<string, { label: string; tone: string }> = {
 
 export interface RestCheck {
   key: string;
+  integrationId: string;
   configured: boolean;
   state: string;
   stateLabel: string;
@@ -253,6 +254,7 @@ export function normRestCheck(raw: unknown): RestCheck {
   const o = isObj(raw) ? raw : {};
   return {
     key: str(o.key),
+    integrationId: str(o.integration_id),
     configured: o.configured === true,
     state: str(o.state, 'unknown'),
     stateLabel: str(o.state_label, str(o.state, 'Unknown')),

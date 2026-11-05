@@ -142,6 +142,7 @@ func setup(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.svc.NewAgentMCP(gw.Dispatch, "test").Mount(gw.Mount)
 	e.gw = httptest.NewServer(gw)
 	t.Cleanup(e.gw.Close)
 
@@ -239,7 +240,7 @@ func (e *env) noSecretAnywhere(outputs ...any) {
 		b, _ := json.Marshal(o)
 		s += string(b)
 	}
-	for _, v := range []string{"sf-secret-value-123", "sn-password-value-123", "sn-secret-value-123", "sap-password-value-123", "PRIVATE KEY", "sf-token-", "sn-token-"} {
+	for _, v := range []string{"sf-secret-value-123", "sn-password-value-123", "sn-secret-value-123", "sap-password-value-123", "PRIVATE KEY", "sf-token-", "sn-token-", "sfagentsig", "agent-secret-value-456"} {
 		if strings.Contains(s, v) {
 			e.t.Fatalf("a credential (%s…) leaked into the database, Diary or an output", v[:6])
 		}

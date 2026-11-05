@@ -15,19 +15,30 @@ var SaaSSystems = []string{"salesforce", "servicenow", "sap"}
 //	{"mode":"none|read_only|read_write",
 //	 "objects":["*"] | names,          // Salesforce objects, ServiceNow tables, SAP <SERVICE>/<EntitySet>
 //	 "integrations":["*"] | ids,       // optional: tenants (salesforce:acme); absent = every tenant
-//	 "mcp_tools":["*"] | names}        // optional: MCP tools; absent = every tool the mode allows
+//	 "mcp_tools":["*"] | names,        // optional: MCP tools; absent = every tool the mode allows
+//	 "agentforce_agents":["*"] | ids,  // salesforce only: Agentforce agents (BotDefinition ids) for the Agent API; absent = none
+//	 "agentforce_messages":"approval|allow"} // salesforce only: messages to them held (default) or allowed
 //
-// Object names compare case-insensitively.
+// Object names compare case-insensitively; Agentforce agent ids exactly.
 type SaaSProfile struct {
-	Mode         string   `json:"mode"`
-	Objects      []string `json:"objects"`
-	Integrations []string `json:"integrations,omitempty"`
-	MCPTools     []string `json:"mcp_tools,omitempty"`
+	Mode               string   `json:"mode"`
+	Objects            []string `json:"objects"`
+	Integrations       []string `json:"integrations,omitempty"`
+	MCPTools           []string `json:"mcp_tools,omitempty"`
+	AgentforceAgents   []string `json:"agentforce_agents,omitempty"`
+	AgentforceMessages string   `json:"agentforce_messages,omitempty"`
 }
+
+// Agentforce message handling (agentforce_messages).
+const (
+	AgentforceApproval = "approval"
+	AgentforceAllow    = "allow"
+)
 
 var (
 	saasObject = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./$-]{0,159}$`)
 	saasTool   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$`)
+	sfAgentID  = regexp.MustCompile(`^(?:[A-Za-z0-9]{15}|[A-Za-z0-9]{18})$`)
 )
 
 // AllowsIntegration reports whether integrations permits a tenant.
@@ -79,6 +90,17 @@ func parseSaaS(system string, raw []byte) (SaaSProfile, error) {
 	if p.MCPTools, err = list("mcp_tools", p.MCPTools, saasTool, func(s string) string { return s }); err != nil {
 		return p, err
 	}
+	if system != "salesforce" && (p.AgentforceAgents != nil || p.AgentforceMessages != "") {
+		return p, invalid("%s: agentforce_agents and agentforce_messages apply to salesforce only", system)
+	}
+	if p.AgentforceAgents, err = list("agentforce_agents", p.AgentforceAgents, sfAgentID, func(s string) string { return s }); err != nil {
+		return p, err
+	}
+	if p.AgentforceMessages != "" {
+		if err := oneOf("agentforce_messages", p.AgentforceMessages, AgentforceApproval, AgentforceAllow); err != nil {
+			return p, err
+		}
+	}
 	return p, nil
 }
 
@@ -117,5 +139,28 @@ func widensSaaS(n, p SaaSProfile, hadPrev bool) bool {
 			}
 		}
 	}
+	// agentforce_agents absent = none, so a new list (or ["*"]) widens.
+	if widensAgents(p.AgentforceAgents, n.AgentforceAgents) {
+		return true
+	}
+	if n.AgentforceMessages == AgentforceAllow && p.AgentforceMessages != AgentforceAllow {
+		return true
+	}
 	return widensList(p.Integrations, n.Integrations) || widensList(p.MCPTools, n.MCPTools)
+}
+
+// widensAgents: absent grants nothing, ["*"] everything.
+func widensAgents(prev, next []string) bool {
+	if slices.Contains(prev, "*") || len(next) == 0 {
+		return false
+	}
+	if slices.Contains(next, "*") {
+		return true
+	}
+	for _, x := range next {
+		if !slices.Contains(prev, x) {
+			return true
+		}
+	}
+	return false
 }

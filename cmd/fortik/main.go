@@ -617,6 +617,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		// this MCP endpoint with their Fortik token; Fortik holds the PAT.
 		nsquickstart.NewProxy(qsSvc, svc, qsMapping, accStore, dp.diary, cfg.Approvals.GrantTTL,
 			log.With("component", "mcp_proxy")).Mount(gw.Mount) // /mcp/netsuite_quickstart, /mcp/<provider>/<tenant>
+		// Salesforce Agentforce agents over MCP: each tool call is dispatched
+		// as the equivalent /gw/salesforce call (same decisions as REST).
+		saasSvc.NewAgentMCP(gw.Dispatch, "dev").Mount(gw.Mount)    // /mcp/agentforce/<tenant>
 		gwBase := strings.TrimRight(cfg.Connectors.PublicURL, "/") // where agents and vendors reach the gateway, if set
 		if gwBase == "" {
 			gwBase = "http://" + cfg.Gateway.Listen

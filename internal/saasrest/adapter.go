@@ -71,13 +71,26 @@ func verbOf(method, op string) action.Verb {
 
 // Map decides nothing: it names the operation for policy. A path outside
 // the provider's API, or a tenant it cannot resolve, is UNKNOWN (denied).
-func (a *Adapter) Map(ctx context.Context, _ authz.Principal, r *http.Request, body []byte) (gateway.Op, error) {
+func (a *Adapter) Map(ctx context.Context, p authz.Principal, r *http.Request, body []byte) (gateway.Op, error) {
 	path := strings.TrimPrefix(r.URL.Path, "/gw/"+a.system)
 	op := gateway.Op{Body: body}
 	op.Action.System = a.system
 	op.Action.PayloadSummary.Bytes = int64(len(body))
 	conn, reason := a.resolve(ctx, r.Header.Get(HeaderIntegration))
-	m, ok := mapPath(a.system, r.Method, path, r.URL.RawQuery)
+	var (
+		m     Request
+		ok    bool
+		extra map[string]any // Agent API target fields
+	)
+	if a.system == integrations.SystemSalesforce && IsAgentAPIPath(path) {
+		if reason == "" {
+			var why string
+			m, extra, why = a.mapAgentAPI(p, r.Method, path, body, conn)
+			ok, reason = why == "", why
+		}
+	} else {
+		m, ok = mapPath(a.system, r.Method, path, r.URL.RawQuery)
+	}
 	if reason == "" && !ok {
 		reason = "path is outside the " + a.system + " API Fortik governs"
 	}
@@ -100,6 +113,17 @@ func (a *Adapter) Map(ctx context.Context, _ authz.Principal, r *http.Request, b
 	}
 	if m.RecordID != "" {
 		t["record_id"] = m.RecordID
+	}
+	for k, v := range extra {
+		t[k] = v
+	}
+	if extra != nil {
+		delete(t, "record_id") // the agent or session id is named on its own
+		if m.Operation == opAgentMessage {
+			op.Action.Verb = action.VerbExecute
+		} else {
+			op.Action.Verb = action.VerbRead // session start and end change no org data
+		}
 	}
 	op.Action.Target = t
 	return op, nil
@@ -278,6 +302,9 @@ func (a *Adapter) Forward(ctx context.Context, p authz.Principal, op *gateway.Op
 	st, err := settingsFrom(res)
 	if err != nil {
 		return &gateway.NotConfiguredError{System: m.Key}
+	}
+	if a.system == integrations.SystemSalesforce && IsAgentAPIPath(m.Path) {
+		return a.forwardAgentAPI(ctx, p, m, st, op.Body, w, r)
 	}
 	target := st.Base + m.Path
 	if m.RawQuery != "" {

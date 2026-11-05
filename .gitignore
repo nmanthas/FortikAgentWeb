@@ -4,5 +4,7 @@ bin/
 *.test
 *.out
 coverage.*
+# ...but not Go source files that happen to be named coverage.go
+!coverage.go
 .env
 # spikes keep their own .gitignore for binaries/outputs

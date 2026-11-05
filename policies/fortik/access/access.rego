@@ -27,6 +27,8 @@
 #   POL-1211 salesforce/servicenow/sap object (table, OData entity set) not
 #            in objects
 #   POL-1212 salesforce/servicenow/sap MCP tool not in mcp_tools
+#   POL-1213 salesforce Agent API: the Agentforce agent is not in
+#            agentforce_agents (absent = none)
 #
 # Phase 3 systems (docs/PHASE3_DESIGN.md §1.5): a2a, http and mcp. No
 # profile denies (POL-020) like every other profiled system. The a2a
@@ -604,7 +606,23 @@ denials contains {"rule_id": "POL-1211", "reason": sprintf("%s: object %v is not
 	not "*" in saas_objects
 	object.get(tgt, "transport", "") == "rest_api"
 	object.get(tgt, "operation", "") != "describe"
+	object.get(tgt, "api", "") != "agent_api"
 	not lower(object.get(tgt, "object", "")) in saas_objects
+}
+
+# --- Salesforce Agent API: which Agentforce agents ------------------------------
+# Profile key agentforce_agents: ["*"] or BotDefinition ids (exact, 15 or 18
+# characters); absent = no Agentforce agent (fail closed: talking to an agent
+# is granted explicitly). Messages are held unless agentforce_messages is
+# "allow" (fortik.rules POL-1214).
+
+denials contains {"rule_id": "POL-1213", "reason": sprintf("%s: Agentforce agent %v is not in agentforce_agents", [prefix, object.get(tgt, "agentforce_agent", "(none)")])} if {
+	act.system == "salesforce"
+	profile
+	object.get(tgt, "api", "") == "agent_api"
+	agents := [a | some a in plist("agentforce_agents"); is_string(a)]
+	not "*" in agents
+	not object.get(tgt, "agentforce_agent", "") in agents
 }
 
 denials contains {"rule_id": "POL-1212", "reason": sprintf("%s: MCP tool %v is not in mcp_tools", [prefix, object.get(tgt, "tool", "")])} if {

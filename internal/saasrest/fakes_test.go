@@ -77,6 +77,98 @@ type fakeSalesforce struct {
 	ClientID, ClientSecret, Username, Audience string
 	PublicKey                                  *rsa.PublicKey
 	NoSObjects                                 bool // the run-as user lacks API access (403)
+
+	// Agent API (LOCAL FAKE of the shapes Salesforce's own client uses):
+	// a separate app whose client credentials yield a JWT-shaped token.
+	AgentClientID, AgentClientSecret string
+	Agents                           map[string]string // BotDefinition id -> label
+	agentSessions                    map[string]string // session id -> agent id
+	StartBodies                      []map[string]any
+}
+
+// agentJWT is a JWT-shaped token (unsigned: the fake only checks it is one
+// it issued) carrying the Agent API scopes.
+func (f *fakeSalesforce) agentJWT(scope string) string {
+	enc := func(v any) string { b, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(b) }
+	f.mu.Lock()
+	f.seq++
+	n := f.seq
+	f.mu.Unlock()
+	tok := enc(map[string]string{"alg": "RS256", "typ": "JWT"}) + "." + enc(map[string]any{"sub": "005xx", "iss": "https://login.salesforce.com", "scope": scope, "n": n}) + ".sfagentsig"
+	f.mu.Lock()
+	if f.tokens == nil {
+		f.tokens = map[string]bool{}
+	}
+	f.tokens[tok] = true
+	f.mu.Unlock()
+	return tok
+}
+
+func (f *fakeSalesforce) agentAPI(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasSuffix(r.Header.Get("Authorization"), ".sfagentsig") {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "LOCAL FAKE: the Agent API needs a JWT access token"})
+		return
+	}
+	b, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
+	f.bodies = append(f.bodies, string(b))
+	if f.agentSessions == nil {
+		f.agentSessions = map[string]string{}
+	}
+	f.mu.Unlock()
+	path := strings.TrimPrefix(r.URL.Path, "/einstein/ai-agent/v1/")
+	parts := strings.Split(path, "/")
+	switch {
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "agents" && parts[2] == "sessions":
+		if _, ok := f.Agents[parts[1]]; !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "LOCAL FAKE: agent not found"})
+			return
+		}
+		var body map[string]any
+		if json.Unmarshal(b, &body) != nil || body["externalSessionKey"] == nil || body["instanceConfig"] == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "LOCAL FAKE: externalSessionKey and instanceConfig are required"})
+			return
+		}
+		f.mu.Lock()
+		f.StartBodies = append(f.StartBodies, body)
+		f.seq++
+		sid := fmt.Sprintf("0a1b2c3d-0000-4000-8000-%012d", f.seq)
+		f.agentSessions[sid] = parts[1]
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"sessionId": sid, "messages": []map[string]string{{"type": "Inform", "message": "Hi, I am " + f.Agents[parts[1]] + "."}}})
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "sessions" && parts[2] == "messages":
+		f.mu.Lock()
+		_, ok := f.agentSessions[parts[1]]
+		f.mu.Unlock()
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "LOCAL FAKE: session not found"})
+			return
+		}
+		var body struct {
+			Message struct {
+				SequenceID json.Number `json:"sequenceId"`
+				Type, Text string
+			} `json:"message"`
+			Variables []any `json:"variables"`
+		}
+		if json.Unmarshal(b, &body) != nil || body.Message.Type != "Text" || body.Message.Text == "" || body.Message.SequenceID == "" || body.Variables == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "LOCAL FAKE: message.sequenceId, type Text, text and variables are required"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"messages": []map[string]string{{"type": "Inform", "message": "echo: " + body.Message.Text, "planId": "p1"}}})
+	case r.Method == http.MethodDelete && len(parts) == 2 && parts[0] == "sessions":
+		if r.Header.Get("X-Session-End-Reason") == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "LOCAL FAKE: x-session-end-reason is required"})
+			return
+		}
+		f.mu.Lock()
+		delete(f.agentSessions, parts[1])
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"messages": []map[string]string{{"type": "SessionEnded"}}})
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "LOCAL FAKE: not found"})
+	}
 }
 
 func (f *fakeSalesforce) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +177,11 @@ func (f *fakeSalesforce) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ok := false
 		switch r.PostForm.Get("grant_type") {
 		case "client_credentials":
+			if f.AgentClientID != "" && r.PostForm.Get("client_id") == f.AgentClientID && r.PostForm.Get("client_secret") == f.AgentClientSecret {
+				writeJSON(w, http.StatusOK, map[string]string{"access_token": f.agentJWT("api chatbot_api sfap_api refresh_token"), "token_type": "Bearer",
+					"id": "https://login.salesforce.com/id/00Dxx0000001gPL/005xx000001X8Uz"})
+				return
+			}
 			ok = r.PostForm.Get("client_id") == f.ClientID && r.PostForm.Get("client_secret") == f.ClientSecret
 		case "urn:ietf:params:oauth:grant-type:jwt-bearer":
 			ok = f.verifyJWT(r.PostForm.Get("assertion"))
@@ -97,12 +194,26 @@ func (f *fakeSalesforce) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"id": "https://login.salesforce.com/id/00Dxx0000001gPL/005xx000001X8Uz", "token_type": "Bearer"})
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/einstein/ai-agent/v1/") {
+		if !f.valid(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "LOCAL FAKE: invalid token"})
+			return
+		}
+		f.agentAPI(w, r)
+		return
+	}
 	if !f.valid(r) {
 		writeJSON(w, http.StatusUnauthorized, []map[string]string{{"errorCode": "INVALID_SESSION_ID", "message": "Session expired or invalid"}})
 		return
 	}
 	f.note(r)
 	switch {
+	case r.URL.Path == "/services/data/v62.0/query" && strings.Contains(r.URL.Query().Get("q"), "FROM BotDefinition"):
+		recs := []map[string]string{}
+		for id, label := range f.Agents {
+			recs = append(recs, map[string]string{"Id": id, "DeveloperName": strings.ReplaceAll(label, " ", "_"), "MasterLabel": label, "AgentType": "ExternalCopilot"})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"totalSize": len(recs), "done": true, "records": recs})
 	case r.URL.Path == "/services/data/":
 		writeJSON(w, http.StatusOK, []map[string]string{{"version": "61.0"}, {"version": "62.0"}})
 	case r.URL.Path == "/services/data/v62.0/sobjects":

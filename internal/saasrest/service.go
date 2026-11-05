@@ -69,6 +69,9 @@ type Service struct {
 	mu     sync.Mutex
 	tokens map[string]token // per connection key
 
+	agentHTTP *http.Client  // Salesforce Agent API (longer timeout)
+	sessions  agentSessions // Agent API sessions started through Fortik
+
 	agentBase string // the gateway's public URL, for the status view
 }
 
@@ -77,7 +80,7 @@ func New(pool *pgxpool.Pool, store *integrations.PGStore, guard Guard, log *slog
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Service{pool: pool, store: store, guard: guard, http: guard.Client(CheckTimeout), log: log, tokens: map[string]token{}}
+	s := &Service{pool: pool, store: store, guard: guard, http: guard.Client(CheckTimeout), agentHTTP: guard.Client(AgentAPITimeout), log: log, tokens: map[string]token{}}
 	if store != nil {
 		store.OnDelete(s.forget)
 	}
@@ -109,10 +112,12 @@ func (s *Service) Token(ctx context.Context, st Settings) (string, error) {
 	return t.header, nil
 }
 
-// Drop forgets a connection's cached token (e.g. after a 401 upstream).
+// Drop forgets a connection's cached token (e.g. after a 401 upstream),
+// and its separate Agent API token.
 func (s *Service) Drop(key string) {
 	s.mu.Lock()
 	delete(s.tokens, key)
+	delete(s.tokens, key+"#agent_api")
 	s.mu.Unlock()
 }
 
@@ -226,6 +231,7 @@ func (s *Service) forget(ctx context.Context, key, _ string) {
 		return
 	}
 	s.Drop(key)
+	s.sessions.dropKey(key)
 	if s.pool != nil {
 		if _, err := s.pool.Exec(ctx, `DELETE FROM rest_connections WHERE integration_key = $1`, key); err != nil {
 			s.log.Error("saas rest: forget", "key", key, "err", err)
@@ -353,7 +359,8 @@ func KnownGaps(system string) []string {
 	}
 	switch system {
 	case integrations.SystemSalesforce:
-		gaps = append(gaps, "Native Agentforce actions run inside Salesforce and do not pass through Fortik: they are not blocked before execution.")
+		gaps = append(gaps, "Native Agentforce actions run inside Salesforce and do not pass through Fortik: they are not blocked before execution.",
+			"Agent API (talking to an Agentforce agent through /gw/salesforce/einstein/ai-agent/v1/... or /mcp/agentforce/<tenant>): Fortik decides each session start and message, but what the Agentforce agent then does inside Salesforce is not seen by Fortik. Sessions are bound to the Fortik agent in memory: after a Fortik restart, start a new session. Streaming is not supported.")
 	case integrations.SystemSAP:
 		gaps = append(gaps, "Endpoints and roles differ by SAP product; only the OData services listed are checked.")
 	}

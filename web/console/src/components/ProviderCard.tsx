@@ -426,6 +426,50 @@ function capabilityText(v: unknown): string {
     .join('; ');
 }
 
+/** Salesforce Agent API readiness (from the last Test connection). */
+interface AgentAPICheck {
+  status?: string;
+  detail?: string;
+  credentials?: string;
+  agents?: { id: string; name: string; api_name?: string; type?: string }[];
+  agents_detail?: string;
+}
+
+function AgentAPIPanel({ a, gateway, tenant }: { a: AgentAPICheck; gateway?: string; tenant?: string }) {
+  const base = gateway ? gateway.replace(/\/gw\/salesforce\/?$/, '') : '';
+  const name = (tenant ?? 'salesforce:default').split(':')[1] || 'default';
+  return (
+    <div data-testid="agent-api" style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
+      <div className="row" style={{ gap: 8 }}>
+        <strong>Agentforce (Agent API)</strong>
+        <span className={`chip ${a.status === 'ready' ? 'green' : 'amber'}`} data-testid="agent-api-status">
+          {a.status === 'ready' ? 'Ready' : 'Not ready'}
+        </span>
+        {a.credentials && <span className="muted">uses {a.credentials}</span>}
+      </div>
+      {a.detail && <div className="muted">{a.detail}</div>}
+      {a.agents && a.agents.length > 0 && (
+        <div>
+          Agents in this org:{' '}
+          {a.agents.map((g, i) => (
+            <span key={g.id}>
+              {i > 0 && ', '}
+              {g.name} <span className="mono">{g.id}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {a.agents && a.agents.length === 0 && <div className="muted">No Agentforce agents found in this org.</div>}
+      {a.agents_detail && <div className="muted">{a.agents_detail}</div>}
+      {base && (
+        <div>
+          REST: <span className="mono">{base}/gw/salesforce/einstein/ai-agent/v1/…</span> · MCP: <span className="mono">{`${base}/mcp/agentforce/${name}`}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** The last live check of a Salesforce, ServiceNow or SAP REST connection. */
 function RestCheckPanel({ connectionKey }: { connectionKey: string }) {
   const chk = useAsync<RestCheck>((signal) => getRestCheck(connectionKey, signal), [connectionKey]);
@@ -433,6 +477,8 @@ function RestCheckPanel({ connectionKey }: { connectionKey: string }) {
   if (chk.error) return <div className="muted small err">Status unavailable: {errText(chk.error)}</div>;
   if (!chk.data) return null;
   const c = chk.data;
+  const { agent_api: agentApiRaw, ...restCaps } = c.capabilities as Record<string, unknown>;
+  const agentApi = agentApiRaw && typeof agentApiRaw === 'object' ? (agentApiRaw as AgentAPICheck) : null;
   return (
     <div className="small" data-testid="rest-check" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div className="row" style={{ gap: 8 }}>
@@ -443,11 +489,12 @@ function RestCheckPanel({ connectionKey }: { connectionKey: string }) {
       </div>
       {!c.endpointPermitted && c.endpointRefusal && <div className="err">Endpoint not permitted: {c.endpointRefusal}</div>}
       {Object.keys(c.identity).length > 0 && <div>Acts as: {capabilityText(c.identity)}</div>}
-      {Object.keys(c.capabilities).length > 0 && (
+      {Object.keys(restCaps).length > 0 && (
         <div data-testid="rest-capabilities">
-          Capabilities{c.capabilitiesCurrent ? '' : ' (from an earlier check)'}: {capabilityText(c.capabilities)}
+          Capabilities{c.capabilitiesCurrent ? '' : ' (from an earlier check)'}: {capabilityText(restCaps)}
         </div>
       )}
+      {agentApi && <AgentAPIPanel a={agentApi} gateway={c.agentEndpoint} tenant={c.integrationId} />}
       {c.agentEndpoint && (
         <div>
           Agents call <span className="mono">{c.agentEndpoint}…</span> with their Fortik token (never these credentials).

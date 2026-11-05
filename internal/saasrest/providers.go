@@ -36,11 +36,14 @@ type Settings struct {
 	ClientID, ClientSecret, Username, Password, PrivateKeyPEM string
 	Audience, TokenURL, Scope                                 string
 
-	APIVersion string   // salesforce
-	Tables     []string // servicenow
-	Services   []string // sap
-	SAPClient  string   // sap
-	Product    string   // sap
+	APIVersion string // salesforce
+	// Salesforce Agent API: its host, and optionally a separate app's
+	// credentials (client credentials) for it.
+	AgentAPIURL, AgentClientID, AgentClientSecret string
+	Tables                                        []string // servicenow
+	Services                                      []string // sap
+	SAPClient                                     string   // sap
+	Product                                       string   // sap
 }
 
 // errSettings: the stored settings cannot be used (a required credential is
@@ -83,6 +86,16 @@ func settingsFrom(r integrations.Resolved) (Settings, error) {
 		}
 		if st.APIVersion == "" {
 			st.APIVersion = "62.0"
+		}
+		st.AgentAPIURL = strings.TrimRight(str("agent_api_url"), "/")
+		if st.AgentAPIURL == "" {
+			st.AgentAPIURL = DefaultAgentAPIURL
+		}
+		st.AgentClientID, st.AgentClientSecret = str("agent_client_id"), r.Secrets["agent_client_secret"]
+		if st.AgentClientID != "" {
+			if err := need("the Agent API consumer secret", st.AgentClientSecret); err != nil {
+				return st, err
+			}
 		}
 		if st.Audience == "" {
 			st.Audience = "https://login.salesforce.com"
@@ -381,6 +394,7 @@ func (s *Service) probeSalesforce(ctx context.Context, st Settings, t token) pro
 			}
 		}
 	}
+	res.capabilities["agent_api"] = s.probeAgentAPI(ctx, st, t.header)
 	res.state = StateConnected
 	res.detail = fmt.Sprintf("token issued (%s); API v%s; %d objects visible, %d queryable", st.Auth, st.APIVersion, len(desc.SObjects), queryable)
 	return res

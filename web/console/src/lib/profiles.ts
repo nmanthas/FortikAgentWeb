@@ -105,6 +105,11 @@ export interface SaaSForm {
   tenants: string[];
   allTools: boolean;
   tools: string[];
+  /** Salesforce only: Agentforce agents (BotDefinition ids) for the Agent API; none when empty and not all. */
+  allAgents: boolean;
+  agents: string[];
+  /** Salesforce only: messages to those agents are held (approval) or allowed. */
+  agentMessages: 'approval' | 'allow';
 }
 
 const isSaaS = (s: AccessSystem) => s === 'salesforce' || s === 'servicenow' || s === 'sap';
@@ -139,6 +144,9 @@ export function toForm(system: AccessSystem, profile: unknown): AnyForm {
       tenants: all(p.integrations) ? [] : strList(p.integrations),
       allTools: all(p.mcp_tools),
       tools: all(p.mcp_tools) ? [] : strList(p.mcp_tools),
+      allAgents: strList(p.agentforce_agents).includes('*'),
+      agents: strList(p.agentforce_agents).filter((a) => a !== '*'),
+      agentMessages: p.agentforce_messages === 'allow' ? 'allow' : 'approval',
     };
   }
   switch (system) {
@@ -219,6 +227,11 @@ export function fromForm(system: AccessSystem, form: AnyForm): Obj {
     const out: Obj = { mode: f.mode, objects: f.allObjects ? ['*'] : cleanList(f.objects.map((o) => o.toLowerCase())) };
     if (!f.allTenants) out.integrations = cleanList(f.tenants.map((t) => t.toLowerCase()));
     if (!f.allTools) out.mcp_tools = cleanList(f.tools);
+    if (system === 'salesforce') {
+      const agents = f.allAgents ? ['*'] : cleanList(f.agents ?? []);
+      if (agents.length) out.agentforce_agents = agents;
+      if (agents.length && f.agentMessages === 'allow') out.agentforce_messages = 'allow';
+    }
     return out;
   }
   switch (system) {
@@ -306,6 +319,8 @@ export function validateForm(system: AccessSystem, form: AnyForm): string[] {
     const tenant = new RegExp(`^${system}:[a-z][a-z0-9_]{0,62}$`);
     if (!f.allTenants) for (const t of cleanList(f.tenants.map((x) => x.toLowerCase()))) if (!tenant.test(t)) errs.push(`Tenant "${t}" must be an integration id such as ${system}:default.`);
     if (!f.allTools) for (const t of cleanList(f.tools)) if (!/^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/.test(t)) errs.push(`MCP tool "${t}" is not a valid tool name.`);
+    if (system === 'salesforce' && !f.allAgents)
+      for (const a of cleanList(f.agents ?? [])) if (!/^(?:[A-Za-z0-9]{15}|[A-Za-z0-9]{18})$/.test(a)) errs.push(`Agentforce agent "${a}" must be the agent's 18-character id (starts with 0Xx).`);
     return errs;
   }
   switch (system) {
@@ -407,6 +422,11 @@ export function summarize(system: AccessSystem, profile: unknown): string {
     const objs = sf.allObjects ? 'every object' : sf.objects.length ? `objects: ${sf.objects.join(', ')}` : 'no objects';
     const tenants = sf.allTenants ? 'every tenant' : `tenants: ${sf.tenants.join(', ') || 'none'}`;
     const tools = sf.allTools ? 'every MCP tool the mode allows' : `MCP tools: ${sf.tools.join(', ') || 'none'}`;
+    if (system === 'salesforce') {
+      const agents = sf.allAgents ? 'every Agentforce agent' : sf.agents.length ? `Agentforce agents: ${sf.agents.join(', ')}` : 'no Agentforce agents';
+      const msgs = sf.allAgents || sf.agents.length ? (sf.agentMessages === 'allow' ? ' (messages allowed)' : ' (messages need approval)') : '';
+      return `mode: ${sf.mode}, ${objs}, ${tenants}, ${tools}, ${agents}${msgs}`;
+    }
     return `mode: ${sf.mode}, ${objs}, ${tenants}, ${tools}`;
   }
   switch (system) {

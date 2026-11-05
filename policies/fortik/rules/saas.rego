@@ -13,6 +13,10 @@
 #   POL-1204 red     malformed target (no transport or tenant): denied
 #   POL-1206 red     MCP: the tool is not in the server's current, verified
 #                    tool list, or the arguments break its schema: denied
+#   POL-1214 yellow  Salesforce Agent API: a message to an Agentforce agent
+#                    (it may act inside Salesforce where Fortik cannot see or
+#                    undo it): held, unless the agent's salesforce access
+#                    profile sets agentforce_messages "allow"
 #
 # Access gates (mode, objects, tenants, MCP tools) are in fortik.access.
 package fortik.rules
@@ -115,6 +119,40 @@ findings contains {
 } if {
 	saas
 	act.verb == "EXECUTE"
+	not agent_api_message
+}
+
+# --- Salesforce Agent API (Agentforce agents) -------------------------------------
+
+agent_api_message if {
+	act.system == "salesforce"
+	object.get(tgt, "api", "") == "agent_api"
+	object.get(tgt, "operation", "") == "agent_message"
+}
+
+agent_messages_allowed if input.access.profile.agentforce_messages == "allow"
+
+findings contains {
+	"rule_id": "POL-1214",
+	"class": "yellow",
+	"reason": sprintf("Salesforce Agentforce agent %v: a message may make the agent act inside Salesforce, which Fortik cannot see or undo: approval required", [object.get(tgt, "agentforce_agent", "")]),
+	"hold": true,
+} if {
+	agent_api_message
+	act.verb == "EXECUTE"
+	not agent_messages_allowed
+}
+
+findings contains {
+	"rule_id": "POL-1214",
+	"class": "red",
+	"reason": "Salesforce Agent API call refused: an Agentforce message must be an EXECUTE",
+	"ladder": "NONE",
+	"deny": true,
+} if {
+	agent_api_message
+	act.verb != "EXECUTE"
+	act.verb != "UNKNOWN"
 }
 
 findings contains {

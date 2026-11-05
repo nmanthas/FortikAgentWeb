@@ -22,7 +22,7 @@ func TestSchemasMatchDesign(t *testing.T) {
 		SystemNetSuite:           {"account_id*", "client_id*", "certificate_id*", "algorithm", "scope", "agent_map", "activity_query", "api_base", "private_key_pem*!"},
 		SystemNetSuiteQuickStart: {"name", "tenant_label*", "endpoint_url", "transport", "auth_type", "token_expires_on", "personal_access_token*!"},
 		SystemNetSuiteMCP:        {"account_id*", "client_id*", "redirect_uri", "scope", "tools_path", "api_base", "oauth_tokens!"},
-		SystemSalesforce:         {"instance_url*", "auth_flow", "client_id*", "username", "audience", "api_version", "client_secret!", "private_key_pem!"},
+		SystemSalesforce:         {"instance_url*", "auth_flow", "client_id*", "username", "audience", "api_version", "client_secret!", "private_key_pem!", "agent_api_url", "agent_client_id", "agent_client_secret!"},
 		SystemSalesforceMCP:      {"endpoint_url*", "instance_url", "auth_type", "client_id", "scope", "redirect_uri", "client_secret!", "access_token!", "oauth_tokens!"},
 		SystemServiceNow:         {"instance_url*", "auth_type", "username", "client_id", "test_tables", "password!", "client_secret!"},
 		SystemServiceNowMCP:      {"endpoint_url*", "auth_type", "client_id", "scope", "redirect_uri", "client_secret!", "access_token!", "oauth_tokens!"},

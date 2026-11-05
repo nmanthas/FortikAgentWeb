@@ -58,7 +58,19 @@ Details: docs/QUICKSTART_TESTING.md and docs/INTEGRATION_MILESTONES.md.
   - `bearer_token` is also possible.
 - **Hosts:** `api.salesforce.com` and `*.my.salesforce.com` are permitted. Other hosts must be listed in `mcp_upstreams.allowed_hosts`.
 
-**Native Agentforce actions do not pass through Fortik.** Fortik governs only calls made through its gateway or MCP endpoint, and Salesforce audit logs would only show them afterwards.
+**Agentforce agents (Agent API)**, on the same REST connection:
+- **What it does:** agents talk to an Agentforce agent through Fortik with Salesforce's Agent API (`https://api.salesforce.com/einstein/ai-agent/v1`). Fortik decides every session start and message, then forwards it with a token it holds.
+  - REST: `POST /gw/salesforce/einstein/ai-agent/v1/agents/<agentId>/sessions` (body optional: Fortik fills `externalSessionKey`, `streamingCapabilities` and `bypassUser`, and always sets `instanceConfig.endpoint` to the connection's My Domain), `POST .../sessions/<sessionId>/messages` with `{"message":{"type":"Text","text":"..."}}` (or `{"text":"..."}`), `DELETE .../sessions/<sessionId>` (optional `X-Session-End-Reason`). Streaming (`/messages/stream`) is refused.
+  - MCP: `/mcp/agentforce/<tenant>` (`default` for the plain `salesforce` connection) with the tools `agentforce_list_agents`, `agentforce_send_message` (`agent_id`, `message`, optional `session_id`) and `agentforce_end_session`. Each tool call is dispatched as the equivalent gateway call, so REST and MCP get the same decisions.
+- **Salesforce setup:** an External Client App with the Client Credentials Flow and a run-as user, the OAuth scopes `api`, `chatbot_api`, `sfap_api` and `refresh_token, offline_access`, and **Issue JSON Web Token (JWT)-based access tokens for named users**. No per-agent connection is needed for an External Client App: the token names the app and the URL names the agent (current Agentforce Builder offers no API connection type). The agent must be Active, of a type the Agent API supports (not "Agentforce (Default)"), with at least one topic. A session start that fails with an empty 404 usually means one of these, a missing scope or the JWT setting.
+- **Fortik settings:** *Agent API URL* (default `https://api.salesforce.com`) and, optionally, a separate *Agent API consumer key and secret*; without them the REST app's credentials are used (its tokens must then be JWT-based).
+- **Test connection** lists the org's agents (BotDefinition) and checks that the Agent API token is a JWT with `chatbot_api` and `sfap_api`. It never starts a session.
+- **Access profile (salesforce):** `agentforce_agents` (`["*"]` or agent ids; absent = none, POL-1213) and `agentforce_messages` (`approval`, the default, holds each message under POL-1214; `allow` lets messages run, each one recorded). Messages need mode `read_write`; session start and end are reads. Listing agents over MCP reads `BotDefinition`, so `objects` must allow it.
+- **Sessions** are bound to the Fortik agent that started them through Fortik: another agent cannot use them. The binding is in memory; after a Fortik restart, start a new session.
+- **Approvals:** a held message runs when the agent repeats it after approval, with the same session and exactly the same text (the approval is bound to a hash of the text; the console shows its first 200 characters).
+- **Tested only against a local fake** of the Agent API shapes taken from Salesforce's own client library (`@salesforce/agents`). Not yet verified against a real org.
+
+**Native Agentforce actions do not pass through Fortik.** Fortik governs only calls made through its gateway or MCP endpoint, and Salesforce audit logs would only show them afterwards. That includes what an Agentforce agent does after it receives a message through Fortik.
 
 ## ServiceNow
 

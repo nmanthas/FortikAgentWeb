@@ -93,7 +93,25 @@ describe('access profile forms', () => {
     expect(fromForm('salesforce', toForm('salesforce', null))).toEqual({ mode: 'none', objects: [] });
     expect(summarize('servicenow', { mode: 'read_only', objects: ['*'] })).toContain('every object, every tenant, every MCP tool the mode allows');
     expect(
-      validateForm('sap', { mode: 'read_only', allObjects: true, objects: [], allTenants: false, tenants: ['salesforce:x'], allTools: false, tools: ['bad tool'] }),
+      validateForm('sap', { mode: 'read_only', allObjects: true, objects: [], allTenants: false, tenants: ['salesforce:x'], allTools: false, tools: ['bad tool'], allAgents: false, agents: [], agentMessages: 'approval' }),
     ).toHaveLength(2);
+  });
+
+  it('salesforce: Agentforce agents and message handling round-trip; none by default', () => {
+    const p = { mode: 'read_write', objects: ['*'], agentforce_agents: ['0Xxg70000020uCOCAY'], agentforce_messages: 'allow' };
+    expect(fromForm('salesforce', toForm('salesforce', p))).toEqual(p);
+    expect(fromForm('salesforce', toForm('salesforce', { mode: 'read_write', objects: ['*'], agentforce_agents: ['*'] }))).toEqual({
+      mode: 'read_write',
+      objects: ['*'],
+      agentforce_agents: ['*'],
+    });
+    // no agents: neither key is written (none allowed), and other systems never get them
+    expect(fromForm('salesforce', toForm('salesforce', { mode: 'read_write', objects: ['*'], agentforce_messages: 'allow' }))).toEqual({ mode: 'read_write', objects: ['*'] });
+    expect(fromForm('servicenow', { ...toForm('servicenow', { mode: 'read_only', objects: ['*'] }), allAgents: true } as never)).not.toHaveProperty('agentforce_agents');
+    expect(summarize('salesforce', p)).toContain('Agentforce agents: 0Xxg70000020uCOCAY (messages allowed)');
+    expect(summarize('salesforce', { mode: 'read_only', objects: ['*'] })).toContain('no Agentforce agents');
+    expect(
+      validateForm('salesforce', { mode: 'read_write', allObjects: true, objects: [], allTenants: true, tenants: [], allTools: true, tools: [], allAgents: false, agents: ['Fortik Kill Switch'], agentMessages: 'approval' }),
+    ).toHaveLength(1);
   });
 });

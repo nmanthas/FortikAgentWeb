@@ -250,6 +250,10 @@ function Select<T extends string>({
   );
 }
 
+const AGENT_MSG_OPTS: ['approval' | 'allow', string][] = [
+  ['approval', 'Hold each message for approval'],
+  ['allow', 'Allow messages (each one recorded)'],
+];
 const MODE_OPTS: [Mode, string][] = [
   ['none', 'None — no access'],
   ['read_only', 'Read only'],
@@ -633,6 +637,33 @@ function SaaSEditor({ system, f, set }: { system: 'salesforce' | 'servicenow' | 
           <ListEditor id={`${system}-tools`} label="MCP tools" values={f.tools} placeholder="tool_name" onChange={(tools) => set({ ...f, tools })} help="Only these tools of the MCP server may be called and listed (POL-1212)." />
         )}
       </div>
+      {system === 'salesforce' && (
+        <>
+          <div className="field">
+            <label className="check">
+              <input type="checkbox" aria-label="All Agentforce agents" checked={f.allAgents} onChange={(e) => set({ ...f, allAgents: e.target.checked })} /> All Agentforce agents
+            </label>
+            {!f.allAgents && (
+              <ListEditor
+                id="salesforce-agents"
+                label="Agentforce agents"
+                values={f.agents}
+                placeholder="0Xxg70000020uCOCAY"
+                onChange={(agents) => set({ ...f, agents })}
+                help="Agent ids this agent may talk to through the Agent API (/gw/salesforce/einstein/... or /mcp/agentforce/<tenant>). Test connection on the Salesforce card lists your org's agents. Empty: none (POL-1213)."
+              />
+            )}
+          </div>
+          <Select
+            id="salesforce-agent-messages"
+            label="Agentforce messages"
+            value={f.agentMessages}
+            options={AGENT_MSG_OPTS}
+            onChange={(agentMessages) => set({ ...f, agentMessages })}
+            help="A message can make the Agentforce agent act inside Salesforce, where Fortik cannot see or undo it. Held messages run when the agent repeats them after approval (POL-1214). Needs mode Read and write."
+          />
+        </>
+      )}
     </div>
   );
 }

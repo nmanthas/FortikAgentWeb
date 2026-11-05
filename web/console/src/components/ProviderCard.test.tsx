@@ -159,6 +159,27 @@ describe('ProviderCard', () => {
     expect(fieldLabels().join('|')).not.toContain('OAuth tokens');
   });
 
+  it('Salesforce: shows the Agent API check (readiness, agents, endpoints) apart from the REST capabilities', async () => {
+    installFakeApi({
+      'GET /v1/integrations/salesforce/check': {
+        state: 'connected',
+        state_label: 'Connected',
+        integration_id: 'salesforce:default',
+        agent_endpoint: 'http://127.0.0.1:8090/gw/salesforce/',
+        capabilities: {
+          objects_visible: 3,
+          agent_api: { status: 'ready', credentials: 'separate Agent API app', agents: [{ id: '0Xxg70000020uCOCAY', name: 'Fortik Kill Switch' }] },
+        },
+      },
+    });
+    renderWithApp(<ProviderCard app={salesforceApp()} schemas={schemas} canEdit onChanged={() => undefined} />);
+    const panel = await screen.findByTestId('agent-api');
+    expect(screen.getByTestId('agent-api-status').textContent).toBe('Ready');
+    expect(panel.textContent).toContain('Fortik Kill Switch 0Xxg70000020uCOCAY');
+    expect(panel.textContent).toContain('http://127.0.0.1:8090/mcp/agentforce/default');
+    expect(screen.getByTestId('rest-capabilities').textContent).not.toContain('agent_api');
+  });
+
   it('keeps unsaved edits of each method when switching, and saves only the selected one', async () => {
     const { calls } = installFakeApi({
       'GET /v1/integrations/salesforce/check': { state: 'connected', state_label: 'Connected' },

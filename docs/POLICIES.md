@@ -246,6 +246,8 @@ REST calls (`/gw/<provider>/...`, `target.transport: "rest_api"`, `operation`, `
 | POL-1206 | red, deny | MCP: the tool is not in the server's current, verified tool list, or the arguments break its schema |
 | POL-1211 | access | REST: the object (Salesforce object, ServiceNow table, SAP `<SERVICE>/<EntitySet>`, compared lower-case) is not in the profile's `objects`; a non-describe call naming no object under a restricted list is refused |
 | POL-1212 | access | MCP: the tool is not in the profile's optional `mcp_tools` |
+| POL-1213 | access | Salesforce Agent API: the Agentforce agent (BotDefinition id) is not in the profile's `agentforce_agents` (absent = none) |
+| POL-1214 | yellow, hold | Salesforce Agent API: a message to an Agentforce agent (it may act inside Salesforce, where Fortik cannot see or undo it); allowed without approval only when the profile sets `agentforce_messages: "allow"`. A message that is not an EXECUTE is denied red |
 | POL-1010 | access | the tenant is not in the profile's optional `integrations` (shared with NetSuite) |
 
 POL-020 (no profile, or mode none) and POL-021 (read_only and not READ) apply as for NetSuite. Paths outside each provider's API and unmapped MCP tools are `UNKNOWN` and denied (POL-002). `policies/fortik/tests/saas_test.rego` asserts the same decision and rule for the same operation over REST and MCP.

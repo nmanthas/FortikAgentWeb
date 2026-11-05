@@ -169,6 +169,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+// Dispatch decides and forwards a /gw/ request for an agent the caller has
+// already authenticated (Fortik's own MCP endpoints translate a tool call
+// into the equivalent gateway call, so both are decided identically).
+func (s *Server) Dispatch(w http.ResponseWriter, r *http.Request, p authz.Principal) {
+	if !strings.HasPrefix(r.URL.Path, "/gw/") {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	r = r.WithContext(authz.With(r.Context(), p))
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
+	s.serveAdapter(w, r, p)
+}
+
 // recordAuthFailure reports a well-formed but unknown agent token to shadow
 // discovery. Malformed or missing credentials are not findings.
 func (s *Server) recordAuthFailure(r *http.Request) {
