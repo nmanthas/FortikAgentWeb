@@ -266,6 +266,7 @@ type fakeServiceNow struct {
 	fakeBase
 	User, Password, ClientID, ClientSecret string
 	Forbidden                              map[string]bool // tables the user has no ACL for
+	queries                                []string        // raw query strings of list reads
 }
 
 func (f *fakeServiceNow) authorized(r *http.Request) bool {
@@ -299,14 +300,37 @@ func (f *fakeServiceNow) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{"message": "Operation Failed: insufficient rights"}})
 	case table == "no_such":
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": "Invalid table no_such"}})
+	case r.Method == http.MethodGet && len(parts) > 1 && parts[1] == snMissing:
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"message": "No Record found", "detail": "Record doesn't exist or ACL restricts the record retrieval"}, "status": "failure"})
+	case r.Method == http.MethodGet && len(parts) > 1:
+		writeJSON(w, http.StatusOK, map[string]any{"result": map[string]string{"sys_id": parts[1], "number": "INC0010001", "short_description": "Printer jam"}})
 	case r.Method == http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"result": []map[string]string{{"sys_id": "abc123"}}})
+		f.mu.Lock()
+		f.queries = append(f.queries, r.URL.RawQuery)
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"result": []map[string]string{{"sys_id": "abc123", "number": "INC0010001", "short_description": "Printer jam"}}})
 	case r.Method == http.MethodDelete:
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"result": map[string]string{"sys_id": "abc123"}})
+		rec := map[string]any{}
+		f.mu.Lock()
+		_ = json.Unmarshal([]byte(f.bodies[len(f.bodies)-1]), &rec)
+		f.mu.Unlock()
+		rec["sys_id"], rec["number"] = snCreated, "INC0010002"
+		code := http.StatusOK
+		if r.Method == http.MethodPost {
+			code = http.StatusCreated
+		} else if len(parts) > 1 {
+			rec["sys_id"] = parts[1]
+		}
+		writeJSON(w, code, map[string]any{"result": rec})
 	}
 }
+
+const (
+	snCreated = "0123456789abcdef0123456789abcdef" // sys_id of a record the fake creates
+	snMissing = "ffffffffffffffffffffffffffffffff" // sys_id the fake has no record for
+)
 
 // fakeSAP: Basic auth, OData $metadata, and the CSRF token dance for changes.
 type fakeSAP struct {

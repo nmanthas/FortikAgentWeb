@@ -45,7 +45,8 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: /sec@example.com/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Dev login' }));
 
-    expect(await screen.findByText('DEV LOGIN — not for production use')).toBeTruthy();
+    expect(await screen.findByTestId('user-chip')).toBeTruthy();
+    expect(screen.queryByText(/DEV LOGIN/)).toBeNull();
     expect(calls.find((c) => c.path === '/auth/dev-login')!.body).toEqual({ email: 'sec@example.com' });
     const chip = screen.getByTestId('user-chip');
     expect(within(chip).getByText('sec@example.com')).toBeTruthy();

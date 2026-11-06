@@ -51,12 +51,32 @@ func (s *Service) NewAgentMCP(d Dispatcher, version string) *AgentMCP {
 
 // Mount registers the endpoint on the gateway's agent-authenticated mux.
 func (m *AgentMCP) Mount(mount func(pattern string, h http.HandlerFunc)) {
-	mount("POST "+AgentMCPPath, m.serve)
-	mount("GET "+AgentMCPPath, func(w http.ResponseWriter, _ *http.Request) {
+	mountMCP(mount, AgentMCPPath, m.serve)
+}
+
+func (m *AgentMCP) serve(w http.ResponseWriter, r *http.Request) {
+	serveMCP(w, r, mcpSpec{
+		route:   "/mcp/agentforce/<tenant>",
+		title:   "Agentforce",
+		server:  "fortik-agentforce",
+		version: m.version,
+		instructions: "Talk to Salesforce Agentforce agents, governed by Fortik. Every call is checked before it reaches Salesforce. " +
+			"A message that needs human approval returns an error saying it was held and NOT sent; after an approver approves it in the " +
+			"Fortik console, call agentforce_send_message again with the same agent_id, the same message and the session_id it gave you.",
+		tools: agentTools,
+		call:  m.call,
+	})
+}
+
+// mountMCP registers one of Fortik's tool-only MCP endpoints (Streamable
+// HTTP without a GET stream; DELETE ends nothing, as there is no session).
+func mountMCP(mount func(pattern string, h http.HandlerFunc), pattern string, serve http.HandlerFunc) {
+	mount("POST "+pattern, serve)
+	mount("GET "+pattern, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Allow", "POST, DELETE")
 		http.Error(w, "this MCP endpoint does not offer a GET stream", http.StatusMethodNotAllowed)
 	})
-	mount("DELETE "+AgentMCPPath, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mount("DELETE "+pattern, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 }
 
 var (
@@ -71,7 +91,20 @@ type mcpReq struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-func (m *AgentMCP) serve(w http.ResponseWriter, r *http.Request) {
+// mcpSpec is one of Fortik's MCP endpoints whose tools are gateway calls.
+type mcpSpec struct {
+	route        string // e.g. /mcp/agentforce/<tenant>, for messages
+	title        string // e.g. Agentforce
+	server       string // serverInfo.name
+	version      string
+	instructions string
+	tools        []map[string]any
+	call         func(ctx context.Context, w http.ResponseWriter, req mcpReq, pr authz.Principal, tenant string, hdr http.Header)
+}
+
+// serveMCP answers one JSON-RPC request: initialize, ping, tools/list and
+// tools/call, for an authenticated agent only.
+func serveMCP(w http.ResponseWriter, r *http.Request, spec mcpSpec) {
 	pr, ok := authz.From(r.Context())
 	if !ok || pr.Kind != authz.KindAgent {
 		rpcError(w, nil, -32001, "an agent token is required")
@@ -98,7 +131,7 @@ func (m *AgentMCP) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	if !tenantName.MatchString(name) {
-		rpcError(w, req.ID, -32602, "the tenant in /mcp/agentforce/<tenant> must be lower-case letters, digits and _")
+		rpcError(w, req.ID, -32602, "the tenant in "+spec.route+" must be lower-case letters, digits and _")
 		return
 	}
 	switch req.Method {
@@ -114,21 +147,19 @@ func (m *AgentMCP) serve(w http.ResponseWriter, r *http.Request) {
 		rpcResult(w, req.ID, map[string]any{
 			"protocolVersion": v,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]any{"name": "fortik-agentforce", "version": m.version},
-			"instructions": "Talk to Salesforce Agentforce agents, governed by Fortik. Every call is checked before it reaches Salesforce. " +
-				"A message that needs human approval returns an error saying it was held and NOT sent; after an approver approves it in the " +
-				"Fortik console, call agentforce_send_message again with the same agent_id, the same message and the session_id it gave you.",
+			"serverInfo":      map[string]any{"name": spec.server, "version": spec.version},
+			"instructions":    spec.instructions,
 		})
 	case "ping":
 		rpcResult(w, req.ID, map[string]any{})
 	case "tools/list":
-		rpcResult(w, req.ID, map[string]any{"tools": agentTools})
+		rpcResult(w, req.ID, map[string]any{"tools": spec.tools})
 	case "tools/call":
 		ctx := decide.WithActor(r.Context(), pr.Actor())
 		ctx = delegation.WithToken(ctx, r.Header.Get(delegation.Header))
-		m.call(ctx, w, req, pr, name, r.Header)
+		spec.call(ctx, w, req, pr, name, r.Header)
 	default:
-		rpcError(w, req.ID, -32601, "method not supported by Fortik's Agentforce MCP endpoint (tools only)")
+		rpcError(w, req.ID, -32601, "method not supported by Fortik's "+spec.title+" MCP endpoint (tools only)")
 	}
 }
 
@@ -172,6 +203,7 @@ type gwResult struct {
 	status   int
 	body     []byte
 	actionID string
+	provider string // e.g. Salesforce, for messages
 	refusal  *struct {
 		Code     string `json:"code"`
 		Decision string `json:"decision"`
@@ -183,20 +215,27 @@ type gwResult struct {
 }
 
 func (m *AgentMCP) gw(ctx context.Context, pr authz.Principal, hdr http.Header, tenant, method, path string, body any) gwResult {
+	return gwCall(ctx, m.dispatch, pr, hdr, integrations.SystemSalesforce, tenant, method, path, body)
+}
+
+// gwCall dispatches the gateway call /gw/<system><path> for the agent, in
+// process, through the gateway's decision pipeline (decided, held, approved,
+// refused and recorded exactly as the same REST call would be).
+func gwCall(ctx context.Context, d Dispatcher, pr authz.Principal, hdr http.Header, system, tenant, method, path string, body any) gwResult {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
 		rd = bytes.NewReader(b)
 	}
-	req := httptest.NewRequest(method, "/gw/salesforce"+path, rd).WithContext(ctx)
+	req := httptest.NewRequest(method, "/gw/"+system+path, rd).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(HeaderIntegration, "salesforce:"+tenant)
+	req.Header.Set(HeaderIntegration, system+":"+tenant)
 	if v := hdr.Get("X-Fortik-Instance-Id"); v != "" {
 		req.Header.Set("X-Fortik-Instance-Id", v)
 	}
 	rec := httptest.NewRecorder()
-	m.dispatch(rec, req, pr)
-	res := gwResult{status: rec.Code, body: rec.Body.Bytes(), actionID: rec.Header().Get("X-Fortik-Action-Id")}
+	d(rec, req, pr)
+	res := gwResult{status: rec.Code, body: rec.Body.Bytes(), actionID: rec.Header().Get("X-Fortik-Action-Id"), provider: titles[system]}
 	if rec.Code >= 400 {
 		var e struct {
 			Error *struct {
@@ -215,6 +254,10 @@ func (m *AgentMCP) gw(ctx context.Context, pr authz.Principal, hdr http.Header, 
 	return res
 }
 
+func (g gwResult) held() bool {
+	return g.refusal != nil && (g.refusal.Held || g.refusal.Decision == "hold")
+}
+
 // problem explains a failed gateway call to the model.
 func (g gwResult) problem(what string) string {
 	if f := g.refusal; f != nil {
@@ -227,7 +270,7 @@ func (g gwResult) problem(what string) string {
 			return fmt.Sprintf("%s failed: %s.", what, f.Message)
 		}
 	}
-	return fmt.Sprintf("%s failed: Salesforce answered HTTP %d: %s", what, g.status, clip(strings.TrimSpace(string(g.body)), 400))
+	return fmt.Sprintf("%s failed: %s answered HTTP %d: %s", what, g.provider, g.status, clip(strings.TrimSpace(string(g.body)), 400))
 }
 
 func (g gwResult) decision() string {

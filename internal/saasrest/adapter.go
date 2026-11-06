@@ -1,7 +1,11 @@
 package saasrest
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -117,6 +121,12 @@ func (a *Adapter) Map(ctx context.Context, p authz.Principal, r *http.Request, b
 	for k, v := range extra {
 		t[k] = v
 	}
+	if extra == nil && len(body) > 0 && op.Action.Verb != action.VerbRead {
+		// The approver sees what would be written, and an approval (bound to
+		// the target) releases only this exact body, not another one sent to
+		// the same path.
+		t["body_sha256"], t["body_preview"] = bodyDigest(body)
+	}
 	if extra != nil {
 		delete(t, "record_id") // the agent or session id is named on its own
 		if m.Operation == opAgentMessage {
@@ -127,6 +137,26 @@ func (a *Adapter) Map(ctx context.Context, p authz.Principal, r *http.Request, b
 	}
 	op.Action.Target = t
 	return op, nil
+}
+
+// bodyPreviewChars bounds the request body shown in a write's target.
+const bodyPreviewChars = 300
+
+// bodyDigest names a request body for policy and approvals: the SHA-256 of
+// its canonical JSON (keys sorted, numbers kept exactly), or of the raw bytes
+// when it is not JSON (an OData $batch), and a short preview of the same.
+func bodyDigest(body []byte) (sum, preview string) {
+	canon := body
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var v any
+	if dec.Decode(&v) == nil && !dec.More() {
+		if b, err := json.Marshal(v); err == nil {
+			canon = b
+		}
+	}
+	h := sha256.Sum256(canon)
+	return hex.EncodeToString(h[:]), strings.ToValidUTF8(clip(string(canon), bodyPreviewChars), "")
 }
 
 type restConn struct{ key, integrationID, tenant string }

@@ -111,7 +111,9 @@ export function Layout({
         <div className="sidebar-foot">Fortik · Phase 6</div>
       </aside>
       <div className="main">
+        {/* Dev-login banner hidden for now:
         {me.authMethod === 'dev' && <div className="dev-banner">DEV LOGIN — not for production use</div>}
+        */}
         <ObserveBanner />
         <header className="header">
           <div className="header-title">

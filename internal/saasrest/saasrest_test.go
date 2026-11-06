@@ -143,6 +143,7 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	e.svc.NewAgentMCP(gw.Dispatch, "test").Mount(gw.Mount)
+	e.svc.NewServiceNowMCP(gw.Dispatch, "test").Mount(gw.Mount)
 	e.gw = httptest.NewServer(gw)
 	t.Cleanup(e.gw.Close)
 

@@ -620,6 +620,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		// Salesforce Agentforce agents over MCP: each tool call is dispatched
 		// as the equivalent /gw/salesforce call (same decisions as REST).
 		saasSvc.NewAgentMCP(gw.Dispatch, "dev").Mount(gw.Mount)    // /mcp/agentforce/<tenant>
+		saasSvc.NewServiceNowMCP(gw.Dispatch, "dev").Mount(gw.Mount) // /mcp/servicenow_rest/<tenant>: ServiceNow over its REST connection
 		gwBase := strings.TrimRight(cfg.Connectors.PublicURL, "/") // where agents and vendors reach the gateway, if set
 		if gwBase == "" {
 			gwBase = "http://" + cfg.Gateway.Listen

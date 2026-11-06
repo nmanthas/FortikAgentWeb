@@ -81,6 +81,12 @@ Details: docs/QUICKSTART_TESTING.md and docs/INTEGRATION_MILESTONES.md.
 - **Permissions:** the user's roles and ACLs.
 - **Agents:** `/gw/servicenow/api/now/...`.
 
+**MCP tools over the REST connection** (`/mcp/servicenow_rest/<tenant>`, `default` for the plain `servicenow` connection): for instances without ServiceNow's MCP Server Console (it needs Now Assist; personal developer instances do not have it).
+- Needs only the REST API connection above; nothing to configure on the MCP Server method.
+- Tools: `servicenow_query_table` (table, encoded query, fields, limit up to 100, offset, display values), `servicenow_get_record`, `servicenow_create_record` and `servicenow_update_record`. There is no delete tool.
+- Each tool call is dispatched as the equivalent gateway call (`/gw/servicenow/api/now/table/...`), so the agent's ServiceNow profile (mode, tables, tenants), holds, approvals, suspensions and audit are the same as for REST. Creates and updates are held (POL-1201); the approver sees the values (`body_preview`), and the approval releases only those exact values.
+- Claude Desktop: `npx -y mcp-remote http://127.0.0.1:8090/mcp/servicenow_rest/default --header "Authorization: Bearer <agent token>"`.
+
 **MCP Server** (`servicenow_mcp[:<tenant>]`):
 - **URL:** from MCP Server Console, e.g. `https://acme.service-now.com/sncapps/mcp-server/mcp/sn_mcp_server_default`.
 - **Authentication:**
@@ -113,7 +119,7 @@ Details: docs/QUICKSTART_TESTING.md and docs/INTEGRATION_MILESTONES.md.
 |---|---|---|
 | What policy sees | method, path, object (Salesforce object, ServiceNow table, SAP service/entity set), record id | the tool name and its mapped verb and operation |
 | Reads | allowed under the access profile | allowed under the profile once the tool is mapped as a read |
-| Writes, actions, other side effects | held for approval (POL-1201/1203/1205) | same rules once mapped |
+| Writes, actions, other side effects | held for approval (POL-1201/1203/1205); the approval covers only the exact body (`body_sha256`) | same rules once mapped |
 | Deletes | red hold, never released unchanged (POL-1202) | same |
 | Unclassified | paths outside the API: refused (POL-002) | unmapped tools: refused (POL-002) and hidden from agents |
 | Undo | not available (no verified undo) | not available |
@@ -145,12 +151,16 @@ Timed suspensions per system (`salesforce`, `servicenow`, `sap`) stop both metho
   - Test connection passed with the client credentials flow (API v62.0; 1,481 objects visible, 1,243 queryable).
   - Two read-only SOQL queries (BotDefinition, BotVersion) ran through the gateway: allowed (POL-000), forwarded, HTTP 200, and recorded under `salesforce:default` / `rest_api`.
   - Writes, holds and approvals have not been exercised on that org.
+- **ServiceNow REST API, 2026-11-06 (a personal developer instance):**
+  - Test connection passed with basic authentication: 3 of 3 tables readable (incident, change_request, sys_user).
+  - Agent calls (gateway or `/mcp/servicenow_rest/<tenant>`), holds and approvals have not been exercised on that instance yet.
 
 ## Limitations (as built, 2026-10-28; updated 2026-11-04)
 
 - **Not verified live:**
   - Salesforce MCP Server, ServiceNow and SAP (both methods), and the NetSuite full-account REST and AI Connector methods: tested only against local fakes of the documented APIs.
   - Salesforce REST is verified live for the connection and reads only (see above).
+  - ServiceNow REST is verified live for Test connection only (see above).
 - **Unmapped MCP tools:** no MCP tool of Salesforce, ServiceNow, SAP or the NetSuite AI Connector is mapped yet.
 - **Fortik sees only its own traffic:** agents or clients holding their own provider credentials, and native agents inside the provider (Agentforce, Now Assist), are not seen by Fortik.
 
@@ -164,4 +174,5 @@ cd web/console && npx vitest run src/components/ProviderCard.test.tsx src/api/ap
 ```
 
 - `internal/saasrest`: auth flows, failures, the URL guard, gateway enforcement, approval and identical retry, SAP CSRF.
+- `internal/saasrest/servicenowmcp_test.go`: the ServiceNow MCP tools over REST (query string, holds, approval bound to the values, profile, argument checks), `TestBodyDigest`.
 - `internal/nsquickstart`: `saas_mcp_test.go` (one Salesforce tenant over REST and MCP, OAuth, revocation, ServiceNow client credentials, SAP bearer token) and `crosstransport_test.go` (NetSuite).
